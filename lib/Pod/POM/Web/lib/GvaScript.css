@@ -1,0 +1,99 @@
+/* AUTOCOMPLETER */
+
+.AC_dropdown { 
+  position: absolute;
+  background-color:#ecf2ff;
+  border: 1px solid #183E6C;
+  padding: 3px;
+  color: #183E6C;
+  overflow-y: auto; 
+}
+
+.AC_highlight { 
+  background-color: #183E6C;
+  color: #ecf2ff;
+}
+
+.AC_message { 
+  width: auto;
+  background-color: #ff9;
+  padding : 4px;
+  color: black;
+  border: 1px black solid;
+}
+
+/* TREE NAVIGATOR */
+
+/* nodes have a dotted line on the left, to visually represent the hierachy */
+.TN_node { 
+  display : block;
+  border-left : 1px dotted silver;
+}
+
+/* node content is 15px more on the right than the node itself */
+.TN_content {  
+  display : block;
+  margin: 0;
+  margin-left: 15px;
+}
+
+/* labels are clickable */
+.TN_label {
+  cursor: pointer;
+}
+
+
+/* buttons in front of each node label */
+.TN_button { 
+  background-image: url(minus.gif);
+  background-repeat : no-repeat;
+  background-position : center left;
+  width: 15px;
+  padding-right: 15px;
+  cursor: pointer;
+ }
+
+
+/* how to highlight the current selected node */
+.TN_selected {
+  background-color: yellow;
+}
+
+
+/* class to implement pseudo-hover on node labels */
+.TN_mouse { 
+  text-decoration: underline;
+}
+
+/* when a node is closed, the button icon becomes a 'plus', and 
+   the content is hidden */
+.TN_closed .TN_button {
+  background-image: url(plus.gif);
+}
+
+.TN_closed .TN_content {
+  display : none;
+}
+
+/* leaf nodes have a single icon 'dot' */
+.TN_leaf .TN_button { 
+  background-image: url(dot.gif);
+}
+
+/* showall : the content of closed nodes is nevertheless visible 
+             (useful for printing) */
+.TN_showall .TN_closed .TN_content {
+  display: block;
+}
+
+.TN_showall {
+  border-left: 5px dotted gray;
+}
+
+
+/* CHOICE LIST */
+
+.CL_highlight { 
+  background-color: #183E6C;
+  color: #ecf2ff;
+}

@@ -1,0 +1,133 @@
+=head1 NAME
+
+Pod::POM::Web::Help - How to use this Perl documentation
+
+=head1 DESCRIPTION
+
+L<Pod::POM::Web> is a Web application for browsing
+the documentation of Perl components installed
+on your local machine. Since pages are dynamically 
+generated, they are always in sync with code actually
+installed. 
+
+This application makes heavy use of dynamic HTML techniques
+like Ajax calls, autocompletion of search fields, etc., so 
+it requires a modern browser. So far it has been tested
+on MSIE 6.0 and Firefox 2.0.
+
+=head1 SEARCHING
+
+=head1 BROWSING
+
+The browsing tree starts with two sections B<Perl docs> and
+B<Pragmas>, containg core Perl documentation. The third section
+B<Modules> reflects the structure of installed modules on the local
+machine (the various C<@INC> directories such as C<lib>, C<site/lib>,
+etc. are collapsed into a single tree). 
+Only top-level nodes are loaded initially; subnodes are
+fetched dynamically through Ajax calls when opening the nodes.
+
+Navigation in the tree is either with the mouse or with the
+keyboard. At any point in time, at most one node is I<selected> : this
+is the one that receives keyboard events. Hence if the tree has no
+selected node, no keyboard events are interpreted.
+
+=head2 Mouse events
+
+Clicking on a node label selects that node,
+and displays the corresponding documentation page
+in the other frame (if applicable -- some nodes
+are just containers of other nodes, without their own
+documentation page).
+
+Clicking on the square C<+>/C<-> icon on the left of the
+label toggles the open/closed status of the node.
+
+=head2 Keyboard events
+
+
+=over
+
+=item C<keypad +>
+
+open the node
+
+=item C<keypad ->
+
+close the node
+
+=item C<keypad *>
+
+open the node and all its subnodes 
+
+=item C<keypad />
+
+close the node and all its subnodes
+
+=item C<Ctrl-keypad *>
+
+activate "show all" mode (the content of closed nodes is nevertheless
+visible, which may be useful for printing)
+
+
+=item C<Ctrl-keypad />
+
+deactivate the "show all" mode
+
+
+=item C<TAB>
+
+if closed, open the node; if already opened, pass focus to the next
+item (maybe the next node, or another tabindex-enabled HTML element,
+such as a form control).
+
+=item C<E<uarr>>
+
+move to previous displayed node
+
+=item C<E<darr>>
+
+move to next displayed node
+
+=item C<E<larr>>
+
+if open, close the node; if already closed, move to parent node
+
+=item C<E<rarr>>
+
+if closed, open the node; if already open, move to next subnode
+
+=item C<HOME>
+
+select the first node of the tree
+
+=item C<END>
+
+select the last visible subnode of the tree
+
+=item C<Ctrl-R>
+
+refresh the node's content (if that node has an URL for dynamic
+content).
+
+=item C<RETURN>
+
+select the node and display its documentation page
+
+=item C<Ctrl-1>..C<Ctrl-9>
+
+close all nodes at level of the specified digit, and open all nodes
+above
+
+=back
+
+=head1 SEE ALSO
+
+L<Pod::Webserver> is another, earlier implementation of a Perl documentation 
+server.
+
+Perl documenation can be browsed in command-line mode
+through the L<perldoc> utility.
+
+See L<Pod::POM:Web> for information about how this application
+is implemented.
