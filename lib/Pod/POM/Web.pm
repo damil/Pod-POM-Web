@@ -2,13 +2,14 @@ package Pod::POM::Web;
 use strict;
 use warnings;
 no warnings 'uninitialized';
-use Pod::POM;
-use List::Util      qw/first/;
-use List::MoreUtils qw/uniq pairwise/;
-use Module::CoreList;
-use CGI; # rather than mod_perl API, because it will work in standalone server
-use URI;
+
+use Pod::POM;                   # for parsing Pod
+use List::MoreUtils qw/uniq/;
+use Module::CoreList;           # for asking if a module belongs to Perl core
+use HTTP::Daemon;               # for the builtin HTTP server
+use URI;                        # for parsing incoming requests
 use URI::QueryParam;
+
 
 #----------------------------------------------------------------------
 # globals
@@ -23,16 +24,19 @@ my @ignore_toc_dirs = qw/auto unicore/;
 my $server_root = eval {Apache2::ServerUtil::server_root()} || "";
 our @search_dirs = grep {$_ ne '.' && $_ ne $server_root} @INC;
 
+my $coloring_package = eval {require ActiveState::Scineplex} ? "SCINEPLEX"
+                     : eval {require PPI::HTML}              ? "PPI" : "";
+
+my $has_indexer = eval {require Pod::POM::Web::Indexer};
+
+
 
 #----------------------------------------------------------------------
 # main entry point
 #----------------------------------------------------------------------
 
-sub server {
+sub server { # builtin HTTP server; unused if running under Apache
   my $class = shift;
-
-  use HTTP::Daemon;
-  use HTTP::Status;
 
   my $port = $ARGV[0] || 8080;
 
@@ -41,9 +45,9 @@ sub server {
   while (my $c = $d->accept) {
     while (my $req = $c->get_request) {
       print STDERR "URL : " , $req->url, "\n";
-      my $r = HTTP::Response->new;
-      $class->handler($r, $req->url, $req->url->path, $req->url->query_form_hash);
-      $c->send_response($r);
+      my $response = HTTP::Response->new;
+      $class->handler($req, $response);
+      $c->send_response($response);
     }
     $c->close;
     undef($c);
@@ -52,23 +56,61 @@ sub server {
 
 
 sub handler : method  {
-  my ($class, $r, $url, $path, $params) = @_; 
-
-  my $self  = $url ? # if coming from server() method above
-    {r => $r, root_url => $url, path => $path, params => $params}
-  : do { # coming from mod_perl
-      my $cgi = CGI->new;
-      {r        => $r, 
-       root_url => $cgi->url(-absolute => 1),
-       path     => $cgi->path_info,
-       params   => $cgi->Vars
-      }};
-
-  bless $self, $class;
-
+  my ($class, $request, $response) = @_; 
+  my $self = $class->new($request, $response);
   eval { $self->dispatch_request(); 1}  or $self->send_html($@);
   return 0; # Apache2::Const::OK;
 }
+
+
+sub new  {
+  my ($class, $request, $response) = @_; 
+  my $self;
+
+  # cheat: will create an instance of the subclass if possible
+  if ($has_indexer && $class eq __PACKAGE__) {
+    $class = "Pod::POM::Web::Indexer";
+  }
+
+  for (ref $request) {
+
+    /^Apache/ and do { # coming from mod_perl
+      my $path = $request->path_info;
+      my $q    = URI->new;
+      $q->query($request->args);
+      my $params = $q->query_form_hash;
+      (my $uri = $request->uri) =~ s/$path$//;
+      $self = {response => $request, # Apache API: same object for both
+               root_url => $uri,
+               path     => $path,
+               params   => $params,
+             };
+      last;
+    };
+
+    /^HTTP/ and do { # coming from HTTP::Daemon // server() method above
+      $self = {response => $response,
+               root_url => "",
+               path     => $request->url->path,
+               params   => $request->url->query_form_hash,
+             };
+      last;
+    };
+
+    #otherwise (coming from cgi-bin or mod_perl Registry)
+    my $q = URI->new;
+    $q->query($ENV{QUERY_STRING});
+    my $params = $q->query_form_hash;
+    $self = {response => undef, 
+             root_url => $ENV{SCRIPT_NAME},
+             path     => $ENV{PATH_INFO},
+             params   => $params,
+           };
+  }
+
+  bless $self, $class;
+}
+
 
 
 
@@ -90,7 +132,7 @@ sub dispatch_request {
     /^source\/(.*)$/   and return $self->serve_source($1);
 
     # for debugging
-    /^_dirs$/          and return print(join "<br>", @search_dirs);
+    /^_dirs$/          and return $self->send_html(join "<br>", @search_dirs);
 
     #otherwise
     return $self->serve_pod($path_info);
@@ -134,20 +176,19 @@ sub serve_source {
   # default (if not printing): line numbers and syntax coloring are on
   $params->{print} or  $params->{lines} = $params->{coloring} = 1;
 
-  my $file = $self->find_sourcefile($path) or die "No file for '$path'";
-  my $text = $self->slurp_file($file);
+  my @files = $self->find_source($path) or die "No file for '$path'";
+  my $display_text;
 
-  $params->{coloring} and eval {
-    require ActiveState::Scineplex;
-    $text = ActiveState::Scineplex::Annotate($text, 
-                                             'perl', 
-                                             outputFormat => 'html');
-  };
+  foreach my $file (@files) {
+    my $text = $self->slurp_file($file);
+    my $view = Pod::POM::View::HTML::_PerlDoc->new(
+     syntax_coloring => $params->{coloring} ? $coloring_package : "",
+     line_numbering  => $params->{lines},
+    );
+    $text = $view->view_verbatim($text);
+    $display_text .= "<p/><h2>$file</h2><p/><pre>$text</pre>";
+  }
 
-  $params->{lines} and do {
-    my $line = 1;
-    $text =~ s/^/sprintf "%6d\t", $line++/egm;
-  };
 
   my $offer_print = $params->{print} ? "" : <<__EOHTML__;
 <form method="get" target="_blank">
@@ -172,8 +213,7 @@ __EOHTML__
 <html>
 <head>
   <link href="$lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="$lib/scineplex.css" rel="stylesheet" type="text/css">
-  <link href="$lib/GvaScript_doc.css" rel="stylesheet" type="text/css">
+  <link href="$lib/PodPomWeb.css" rel="stylesheet" type="text/css">
   <style> 
     PRE {border: none; background: none}
     FORM {float: right; font-size: 70%; border: 1px solid}
@@ -183,11 +223,9 @@ __EOHTML__
 $doc_link
 <h1>Source of $path</h1>
 
-<pre>File: $file</pre>
-
 $offer_print
 
-<pre>$text</pre>
+$display_text
 </body>
 </html>
 __EOHTML__
@@ -197,10 +235,16 @@ __EOHTML__
 
 sub serve_pod {
   my ($self, $path) = @_;
-  $path =~ s[::][/]g;
+  $path =~ s[::][/]g; # just in case, if called /perldoc/Foo::Bar
 
-  my $podfile = $self->find_sourcefile($path) or die "No file for '$path'";
-  my $content = $self->slurp_file($podfile);
+  # if several sources, will be first *.pod, then *.pm
+  my @sources = $self->find_source($path) or die "No file for '$path'";
+  my $content = $self->slurp_file($sources[0]);
+
+  my $version = @sources > 1 
+    ? $self->parse_version($self->slurp_file($sources[-1])) 
+    : $self->parse_version($content);
+  $version &&= " <small>$version</small>";
 
   # Pod::POM fails to parse correctly when there is an initial blank line
   $content =~ s/^\s*//; 
@@ -214,9 +258,13 @@ sub serve_pod {
 
   my $parser = Pod::POM->new;
   my $pom = $parser->parse_text($content) or die $parser->error;
-  my $view    = Pod::POM::View::HTML::_PerlDoc->new(
-    root_url => $self->{root_url},
-    path     => $path,
+  (my $mod_name = $path) =~ s[/][::];
+  my $view = Pod::POM::View::HTML::_PerlDoc->new(
+    version         => $version,
+    root_url        => $self->{root_url},
+    path            => $path,
+    mod_name        => $mod_name,
+    syntax_coloring => $coloring_package,
    );
 
   my $html = $view->print($pom);
@@ -228,23 +276,15 @@ sub serve_pod {
 }
 
 
-sub slurp_file {
-  my ($self, $file) = @_;
-  open my $fh, $file or die "open $file: $!";
-  my $mtime = (stat $fh)[9];
-  local $/ = undef;
-  my $content = <$fh>;
-  return wantarray ? ($content, $mtime) : $content;
-}
-
-sub find_sourcefile {
+sub find_source {
   my ($self, $path) = @_;
 
   foreach my $prefix (@search_dirs) {
-    my $filename = first {-f}("$prefix/$path.pod", 
-                              "$prefix/$path.pm", 
-                              "$prefix/Pod/$path.pod");
-    return $filename if $filename;
+    my @found = grep  {-f} ("$prefix/$path.pod", 
+                            "$prefix/$path.pm", 
+                            "$prefix/pod/$path.pod",
+                            "$prefix/pods/$path.pod");
+    return @found if @found;
   }
   return undef;
 }
@@ -335,7 +375,7 @@ sub htmlize_perldocs {
   # Pod/perl.pom Synopsis contains a classification of perl*.pod documents
 
   my $parser  = Pod::POM->new;
-  my $source  = $self->slurp_file($self->find_sourcefile("perl"));
+  my $source  = $self->slurp_file($self->find_source("perl"));
   my $perlpom = $parser->parse_text($source) or die $parser->error;
 
   my ($synopsis) = grep {$_->title eq 'SYNOPSIS'} $perlpom->head1();
@@ -398,33 +438,45 @@ sub wrap_main_toc {
   my @funcs = map {$_->title} grep {$_->content =~ /\S/} $self->perlfunc_items;
   s|[/\s(].*||s foreach @funcs;
   my $json_funcs = "[" . join(",", map {qq{"$_"}} uniq @funcs) . "]";
+  my $js_has_indexer = $has_indexer ? 'true' : 'false';
   return $self->send_html(<<__EOHTML__);
 <html>
 <head>
   <base target="contentFrame">
   <link href="lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="lib/GvaScript_doc.css" rel="stylesheet" type="text/css">
+  <link href="lib/PodPomWeb.css" rel="stylesheet" type="text/css">
   <script src="lib/prototype.js"></script>
   <script src="lib/GvaScript.js"></script>
   <script>
     var perlfuncs = $json_funcs;
-    var treeNavigator, perlfuncsAutoCompleter;
+    var treeNavigator;
+    var completers = {};
+    var has_indexer = $js_has_indexer;
+
     function setup() {
       treeNavigator 
         = new GvaScript.TreeNavigator('TN_tree', {tabIndex:0});
-      perlfuncsAutoCompleter 
-        = new GvaScript.AutoCompleter(perlfuncs, {minimumChars: 1, 
-                                                  minWidth    : 100,
-                                                  offsetX     : -20});
+      completers.perlfunc = new GvaScript.AutoCompleter(
+             perlfuncs, 
+             {minimumChars: 1, minWidth: 100, offsetX: -20});
+      if (has_indexer)
+        completers.modlist  = new GvaScript.AutoCompleter(
+             "search?source=modlist&search=", 
+             {minimumChars: 2, minWidth: 100, offsetX: -20, typeAhead: false});
+
     }
     window.onload = setup;
 
    function maybe_complete(input) {
-     if (input.form.source.selectedIndex == 0) // perlfunc
-        perlfuncsAutoCompleter.autocomplete(input);
-     else 
-        perlfuncsAutoCompleter.detach(input);
-     return true;
+     if (input._autocompleter)
+        input._autocompleter.detach(input);
+
+     switch (input.form.source.selectedIndex) {
+       case 0: completers.perlfunc.autocomplete(input); break;
+       case 2: if (has_indexer)
+                 completers.modlist.autocomplete(input); 
+               break;
+     }
    }
 
     function displayContent(event) {
@@ -453,7 +505,7 @@ Perl Documentation
 <a href="Pod/POM/Web/Help" class="small_title" style="float:right">Help</a>
 <br><span class="small_title">Search in</span>
 <form action="search" method="get">
-     <select name="source"
+     <select name="source">
       <option>perlfunc</option>
       <option>perlfaq</option>
       <option>modules</option>
@@ -486,13 +538,20 @@ __EOHTML__
 sub dispatch_search {
   my ($self) = @_;
 
-  my $params = $self->params;
+  my $params = $self->{params};
   my $source = $params->{source};
   my $method = {perlfunc => 'perlfunc',
                 perlfaq  => 'perlfaq',
                 modules  => 'serve_pod',
-                fulltext => 'fulltext', # see Pod::POM::Web::Indexer
+                fulltext => 'fulltext', 
+                modlist  => 'modlist', 
                 }->{$source}  or die "cannot search in '$source'";
+
+  if ($method =~ /fulltext|modlist/ and not $has_indexer) {
+    die "please ask your system administrator to install "
+      . "<b>Search::Indexer</b> in order to use this method";
+  }
+
   return $self->$method($params->{search});
 }
 
@@ -504,7 +563,7 @@ sub perlfunc_items {
   my ($self) = @_;
 
   unless (@_perlfunc_items) {
-    my $funcpom = $self->pod2pom($self->find_sourcefile("perlfunc"));
+    my $funcpom = $self->pod2pom($self->find_source("perlfunc"));
     my ($description) = grep {$_->title eq 'DESCRIPTION'} $funcpom->head1;
     my ($alphalist)   
       = grep {$_->title =~ /^Alphabetical Listing/i} $description->head2;
@@ -529,8 +588,7 @@ sub perlfunc {
   return $self->send_html(<<__EOHTML__);
 <html>
 <head>
-  <link href="$lib/GvaScript_doc.css" rel="stylesheet" type="text/css">
-  <link href="$lib/scineplex.css" rel="stylesheet" type="text/css">
+  <link href="$lib/PodPomWeb.css" rel="stylesheet" type="text/css">
 </head>
 <body>
 <h2>Extract from <a href="$self->{root_url}/perlfunc">perlfunc</a></h2>
@@ -547,12 +605,18 @@ sub perlfaq {
   my $regex = qr/\b\Q$faq_entry\E\b/i;
   my $answers   = "";
   my $n_answers = 0;
+
+  my $view    = Pod::POM::View::HTML::_PerlDoc->new(
+    root_url => $self->{root_url},
+    path     => "perlfaq/$faq_entry",
+   );
+
  FAQ: 
   for my $num (1..9) {
-    my $faqpom = $self->pod2pom($self->find_sourcefile("perlfaq$num"));
+    my $faqpom = $self->pod2pom($self->find_source("perlfaq$num"));
     my @questions = map {grep {$_->title =~ $regex} $_->head2} $faqpom->head1
       or next FAQ;
-    my @nodes = map {Pod::POM::View::HTML::_PerlDoc->print($_)} @questions;
+    my @nodes = map {$view->print($_)} @questions;
     $answers .= generic_node(label     => "Found in perlfaq$num",
                              label_tag => "h2",
                              content   => join("", @nodes));
@@ -564,8 +628,7 @@ sub perlfaq {
 <html>
 <head>
   <link href="$lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="$lib/GvaScript_doc.css" rel="stylesheet" type="text/css">
-  <link href="$lib/scineplex.css" rel="stylesheet" type="text/css">
+  <link href="$lib/PodPomWeb.css" rel="stylesheet" type="text/css">
   <script src="$lib/prototype.js"></script>
   <script src="$lib/GvaScript.js"></script>
   <script>
@@ -602,55 +665,55 @@ sub lib_file {
                    gif  => 'image/gif'}->{$extension}
                      or die "lib_file($filename): unexpected extension";
   my ($content, $mtime) = $self->slurp_file($full_filename);
-  my $modified = gmtime $mtime;
-  my $length   = length $content;
-
-  my $r = $self->{r};
-  for (ref $r) {
-    /^Apache/ and do {
-      $r->content_type($mime_type);
-      $r->set_last_modified($mtime);
-      $r->set_content_length($length);
-      $r->print($content);
-      return;
-    };
-    /^HTTP/ and do {
-      $r->header(Content_type   => $mime_type,
-                 Content_length => $length,
-                 Last_modified  => $modified);
-      $r->add_content($content);
-      return;
-    }
-  }
-  # otherwise
-  print <<__EOTHML__;
-Content-type: $mime_type
-Content-length: $length
-Last-modified: $modified
-
-$content
-__EOTHML__
+  $self->send_content({content   => $content, 
+                       mtime     => $mtime, 
+                       mime_type => $mime_type});
 }
 
 
 sub send_html {
   my ($self, $html) = @_;
-  my $r = $self->{r};
+  $self->send_content({content => $_[1]});
+}
+
+
+
+sub send_content {
+  my ($self, $args) = @_;
+  my $length    = length $args->{content};
+  my $mime_type = $args->{mime_type} || "text/html";
+  my $modified = gmtime $args->{mtime};
+
+  my $r = $self->{response};
   for (ref $r) {
+
     /^Apache/ and do {
-      $r->content_type('text/html');
-      $r->print($html);
+      require Apache2::Response;
+      $r->content_type($mime_type);
+      $r->set_content_length($length);
+      $r->set_last_modified($args->{mtime}) if $args->{mtime};
+      $r->print($args->{content});
       return;
     };
-    /^HTTP/ and do {
-      $r->header(Content_type => 'text/html');
-      $r->add_content($html);
+
+    /^HTTP::Response/ and do {
+      $r->header(Content_type   => $mime_type,
+                 Content_length => $length);
+      $r->header(Last_modified  => $modified) if $args->{mtime};
+      $r->add_content($args->{content});
       return;
-    }
+    };
+
+    # otherwise (cgi-bin)
+    my $headers = "Content-type: $mime_type\nContent-length: $length\n";
+    $headers .= "Last-modified: $modified\n" if  $args->{mtime};
+    binmode(STDOUT);
+    print "$headers\n$args->{content}";
+    return;
   }
-  # otherwise
-  print "Content-type: text/html\n\n$html";
 }
+
+
 
 
 #----------------------------------------------------------------------
@@ -686,9 +749,82 @@ sub leaf {
 }
 
 
+#----------------------------------------------------------------------
+# utilities
+#----------------------------------------------------------------------
+
+
+sub slurp_file {
+  my ($self, $file) = @_;
+  open my $fh, $file or die "open $file: $!";
+  my $mtime = (stat $fh)[9];
+  local $/ = undef;
+  my $content = <$fh>;
+  return wantarray ? ($content, $mtime) : $content;
+}
+
+
+
+# parse_version: code copied and adapted from Module::Build::ModuleInfo,
+# but working on in-memory string instead of opening the file
+my $VARNAME_REGEXP = qr/ # match fully-qualified VERSION name
+  ([\$*])         # sigil - $ or *
+  (
+    (             # optional leading package name
+      (?:::|\')?  # possibly starting like just :: (ala $::VERSION)
+      (?:\w+(?:::|\'))*  # Foo::Bar:: ...
+    )?
+    VERSION
+  )\b
+/x;
+
+my $VERS_REGEXP = qr/ # match a VERSION definition
+  (?:
+    \(\s*$VARNAME_REGEXP\s*\) # with parens
+  |
+    $VARNAME_REGEXP           # without parens
+  )
+  \s*
+  =[^=~]  # = but not ==, nor =~
+/x;
+
+
+
+
+sub parse_version {
+  # my ($self, $content) = @_ # don't copy $content for efficiency, use $_[1]
+  my $result;
+  my $in_pod = 0;
+  while ($_[1] =~ /^.*$/mg) { # $_[1] is $content
+    my $line = $&;
+    chomp $line;
+    next if $line =~ /^\s*#/;
+    $in_pod = $line =~ /^=(?!cut)/ ? 1 : $line =~ /^=cut/ ? 0 : $in_pod;
+
+    # Would be nice if we could also check $in_string or something too
+    last if !$in_pod && $line =~ /^__(?:DATA|END)__$/;
+
+    next unless $line =~ $VERS_REGEXP;
+    my( $sigil, $var, $pkg ) = $2 ? ( $1, $2, $3 ) : ( $4, $5, $6 );
+    $line =~ s/\bour\b//;
+    my $eval = qq{q#  Hide from _packages_inside()
+                   #; package Pod::POM::Web::_version;
+                   no strict;
+                   local $sigil$var;
+                    \$$var=undef; do { $line }; \$$var
+                 };
+    no warnings;
+    $result = eval($eval) || "";
+  }
+  return $result;
+}
 
 
 1;
+#======================================================================
+
+
+
 
 #----------------------------------------------------------------------
 # VIEW PACKAGE for Pod::POM::View::HTML
@@ -749,9 +885,13 @@ sub view_pod {
   $doc_title =~ s/<.*?>//g; # no HTML tags
 
   my ($name, $description) = ($doc_title =~ /^\s*(.*?)\s+-+\s+(.*)/);
+  $name ||= $doc_title;
 
-  my $core_release = Module::CoreList->first_release($name) || "";
-  $core_release &&= "<small>(in Perl core since version $core_release)</small>";
+  my $core_release = Module::CoreList->first_release($self->{mod_name}) || "";
+  my $orig_version = $Module::CoreList::version{$core_release}{$self->{mod_name}} || "";
+     $orig_version &&= "version $orig_version ";
+
+  $core_release &&= "<small>(${orig_version}entered Perl core in $core_release)</small>";
 
   my $content = $pom->content->present($self);
   my $toc = $self->make_toc($pom, 0);
@@ -760,8 +900,7 @@ sub view_pod {
 <html>
 <head>
   <link href="$lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="$lib/scineplex.css" rel="stylesheet" type="text/css">
-  <link href="$lib/GvaScript_doc.css" rel="stylesheet" type="text/css">
+  <link href="$lib/PodPomWeb.css" rel="stylesheet" type="text/css">
   <script src="$lib/prototype.js"></script>
   <script src="$lib/GvaScript.js"></script>
   <script>
@@ -784,11 +923,19 @@ sub view_pod {
   <style>
     #TOC .TN_content .TN_label {font-size: 80%; font-weight: bold}
     #TOC .TN_leaf    .TN_label {font-weight: normal}
+
+    #ref_box {
+      clear: right;
+      float: right; 
+      text-align: right; 
+      font-size: 80%;
+    }
     #title_descr {
-       font-style: italic; 
+       clear: right;
        float: right; 
-       width: 40%;
+       font-style: italic; 
        margin-top: 8px;
+       margin-bottom: 8px;
        padding: 5px;
        text-align: center;
        border: 3px double #888;
@@ -796,15 +943,26 @@ sub view_pod {
   </style>
 </head>
 <body>
-<a href="$self->{root_url}/source/$self->{path}"
-   style="float:right">Source</a>
+
 <div id='TN_tree'>
   <div class="TN_node">
-   <h1 class="TN_label">$name</h1>
+   <h1 class="TN_label">$name$self->{version}</h1>
+    $core_release
+
    <span id="title_descr">$description</span>
-   $core_release
+
+   <span id="ref_box">
+   <a href="$self->{root_url}/source/$self->{path}">Source</a><br>
+   CPAN 
+   <a href="http://www.annocpan.org/?mode=search&field=Module&name=$self->{mod_name}"
+      target="_blank">Anno</a> |
+   <a href="http://www.cpanforum.com/search/?what=modulee&name=$self->{mod_name}"
+      target="_blank">Forum</a> |
+   <a href="http://cpan.uwinnipeg.ca/search/?mode=modulee&query=$self->{mod_name}"
+      target="_blank">Kobes</a>
+   </span>
+
    <div class="TN_content">
-     
      <div class="TN_node"  onPing="jumpto_href" id="TOC">
        <h3 class="TN_label">Table of contents</h3>
        <div class="TN_content">
@@ -822,7 +980,7 @@ __EOHTML__
 
 }
 
-# installing same method for view_head1, view_head2, etc.
+# generating family of methods for view_head1, view_head2, etc.
 BEGIN {
   for my $num (1..6) {
     no strict 'refs';
@@ -854,15 +1012,42 @@ sub view_seq_index {
 sub view_verbatim {
   my ($self, $text) = @_;
 
+  my $coloring = $self->{syntax_coloring};
+  if ($coloring) {
+    my $method = "${coloring}_coloring";
+    $text = $self->$method($text);
+  }
+  if ($self->{line_numbering}) {
+    my $line = 1;
+    $text =~ s/^/sprintf "%6d\t", $line++/egm;
+  }
+  return qq{<pre class="$coloring">$text</pre>};
+}
+
+
+
+sub PPI_coloring {
+  my ($self, $text) = @_;
+  my $ppi = PPI::HTML->new();
+  $text = $ppi->html(\$text);
+  $text =~ s/<br>//g;
+  return $text;
+}
+
+
+sub SCINEPLEX_coloring {
+  my ($self, $text) = @_;
   eval {
-    require ActiveState::Scineplex;
     $text = ActiveState::Scineplex::Annotate($text, 
                                              'perl', 
                                              outputFormat => 'html');
-    return "<pre>$text</pre>";
-  }
-    or return $self->SUPER::view_verbatim($text);
+  };
+  return $text;
 }
+
+
+
+
 
 sub make_toc {
   my ($self, $item, $level) = @_;
@@ -888,6 +1073,10 @@ sub make_toc {
   return $html;
 }
 
+
+sub DESTROY {} # avoid AUTOLOAD
+
+
 1;
 
 
@@ -896,69 +1085,182 @@ __END__
 
 =head1 NAME
 
-Pod::POM::Web - Perldoc server
+Pod::POM::Web - HTML Perldoc server
 
-=head1 VERSION
+=head1 DESCRIPTION
 
-Version 0.01
+L<Pod::POM::Web> is a Web application for browsing
+the documentation of Perl components installed
+on your local machine. Since pages are dynamically 
+generated, they are always in sync with code actually
+installed. 
 
-
-=head1 SYNOPSIS
-
-
-
-
-
-=head1 AUTHOR
-
-Laurent Dami, C<< <laurent.dami at justice.ge.ch> >>
-
-=head1 BUGS
-
-Please report any bugs or feature requests to
-C<bug-pod-pom-web at rt.cpan.org>, or through the web interface at
-L<http://rt.cpan.org/NoAuth/ReportBug.html?Queue=Pod-POM-Web>.
-I will be notified, and then you'll automatically be notified of progress on
-your bug as I make changes.
-
-=head1 SUPPORT
-
-You can find documentation for this module with the perldoc command.
-
-    perldoc Pod::POM::Web
-
-You can also look for information at:
-
-=over 4
-
-=item * AnnoCPAN: Annotated CPAN documentation
-
-L<http://annocpan.org/dist/Pod-POM-Web>
-
-=item * CPAN Ratings
-
-L<http://cpanratings.perl.org/d/Pod-POM-Web>
-
-=item * RT: CPAN's request tracker
-
-L<http://rt.cpan.org/NoAuth/Bugs.html?Dist=Pod-POM-Web>
-
-=item * Search CPAN
-
-L<http://search.cpan.org/dist/Pod-POM-Web>
-
-=back
-
-=head1 ACKNOWLEDGEMENTS
-
-This web application was inspired by :
+The application offers 
 
 =over
 
 =item *
 
-the structure of HTML documentation released with ActivePerl 
-from ActiveState.
+a tree view for browsing through installed modules
+(with dynamic expansion of branches as they are visited)
+
+=item *
+
+a tree view for navigating and opening / closing sections while
+visiting a documentation page
+
+=item *
+
+a source code view with syntax coloring
+(this is an optional feature -- see section L</"Optional features">)
+
+
+=item *
+
+direct access to L<perlfunc> entries (builtin Perl functions)
+
+=item *
+
+search through L<perlfaq> headers
+
+=item *
+
+fulltext search, including names of Perl variables
+(this is an optional feature -- see section L</"Optional features">).
+
+=item *
+
+parsing and display of version number
+
+=item *
+
+display if and when the displayed module entered Perl core.
+
+=item *
+
+parsing pod links and translating them into hypertext links
+
+=item *
+
+links to CPAN sites
+
+=back
+
+
+
+The DHTML code for navigating through documentation trees requires a
+modern browser. So far it has been tested on Microsoft Internet
+Explorer 6.0 and Firefox 2.0
+
+=head1 USAGE
+
+Usage is described in a separate document 
+L<Pod::POM::Web::Help>.
+
+=head1 INSTALLATION
+
+=head2 Starting the Web application
+
+Once the code is installed (most probably through
+L<CPAN> or L<CPANPLUS>), you have to configure
+the web server :
+
+=head3 As a mod_perl service
+
+The recommended way to run this application is within
+a mod_perl environment. If you have Apache2 
+with mod_perl 2.0, then edit your 
+F<perl.conf> as follows :
+
+  <Location /perldoc>
+        SetHandler modperl
+        PerlResponseHandler Pod::POM::Web->handler
+  </Location>
+
+Then navigate to URL L<http://localhost/perldoc>.
+
+=head3 As a cgi-bin script 
+
+Alternatively, you can run this application as a cgi-script
+by writing simple file in your C<cgi-bin> directory, like this :
+
+  #!/path/to/perl
+  use Pod::POM::Web;
+  Pod::POM::Web->handler;
+
+The same can be done for running under mod_perl Registry
+(write the same script as above and put it in your
+Apache/perl directory). However, this does not make much sense,
+because if you have mod_perl Registry then you could as well
+run it as a basic mod_perl handler.
+
+=head3 As a standalone server
+
+A third way to use this application is to start a process invoking
+the builtin HTTP server :
+
+  /path/to/perl -MPod::POM::Web -e "Pod::POM::Web->server"
+
+This is useful if you have no other HTTP server, or if
+you want to run this module under the perl debugger.
+
+=head2 Note about static files
+
+The application needs some static DHTML resources (style sheets,
+javascript code, images). These are served dynamically by 
+the module, under the L<lib> URL; but of course is it more
+efficient to tell Apache to serve these files directly, by putting
+an alias to the F<perl/site/lib/Pod/POM/Web/lib> directory.
+
+=head2 Note about security
+
+This application is intented as a power tool for Perl developers, 
+not as an Internet application. It will display the documentation and source
+code of any module installed under your C<@INC> path or
+Apache C<lib/perl> directory, so it is probably a bad idea
+to put it on a public Internet server.
+
+=head2 Optional features
+
+=head3 Syntax coloring
+
+Syntax coloring improves readability of code excerpts.
+If your Perl distribution is from ActiveState, then 
+C<Pod::POM::Web> will take of the L<ActiveState::Scineplex> module
+which is already installed on your system. Otherwise,
+you need to install L<PPI::HTML>, available from CPAN.
+
+=head3 Fulltext indexing
+
+C<Pod::POM::Web> can index the documentation and source code
+of all your installed modules, including Perl variable names, 
+C<Names:::Of::Modules>, etc. To use this feature you need to 
+
+=over
+
+=item *
+
+install L<Search::Indexer> from CPAN
+
+=item *
+
+build the index as described in L<Pod::POM::Web::Indexer> documentation.
+
+=back
+
+
+
+=head1 ACKNOWLEDGEMENTS
+
+This web application was deeply inspired by :
+
+=over
+
+=item *
+
+the structure of HTML Perl documentation released with 
+ActivePerl (L<http://www.activeperl.com/ASPN/Perl>).
+
 
 =item *
 
@@ -968,15 +1270,25 @@ the tree navigation in Microsoft's MSDN Web site.
 
 the standalone HTTP server implemented in L<Pod::WebServer>.
 
+=item *
+
+the wide possibilities of Andy Wardley's L<Pod::POM> parser.
 
 =back
 
-Andy Wardley's L<Pod::POM> parser was extremely helpful.
+
+=head1 BUGS
+
+Please report any bugs or feature requests to
+C<bug-pod-pom-web at rt.cpan.org>, or through the web interface at
+L<http://rt.cpan.org/NoAuth/ReportBug.html?Queue=Pod-POM-Web>.
+I will be notified, and then you'll automatically be notified of progress on
+your bug as I make changes.
 
 
+=head1 AUTHOR
 
-
-
+Laurent Dami, C<< <laurent.dami at justice.ge.ch> >>
 
 
 =head1 COPYRIGHT & LICENSE
@@ -988,28 +1300,18 @@ under the same terms as Perl itself.
 
 =head1 TODO
 
-  - standalone server
-  - autocompleter broken
-  - serve_source should display both *.pod AND *.pm
-  - remove modperl API, deal directly with request
-   - autocompleter on modules + fulltext
+
   - tests !
-  - modperl / Perl::Registry / standalone server
-  - caching !
-  - Programs (c:/perl/bin)
-  - GvaScript AC : RETURN should do default if no dropdown list
-  - GvaScript explain trick with <a class="TN_label">
-  - fix MSIE fetching many times the plus.gif (headers ??)
-  - Unix : beware Pod/pod; dependencies (perldoc package!)
-  - URL for pre-fetching a given page; URL to rebuild frameset (cf. MSDN)
+
+  - performance, expiry headers, server-side caching
+  - also serve Programs (c:/perl/bin)
 
 Bugs:
 
   - display in perlre (<a...)
   - declare bugs 
-      - Pod::pom on initial blank line (cf. perldoc/perlpodspec)
-      - perl.pod : missing parts in summary
       - SQL::Abstract, nonempty line #337
-      - perlfunc.pod line #516/531 should be L</open>
       - LWP: item without '*'
+
+
 

@@ -8,7 +8,7 @@ use Pod::POM;
 use List::Util      qw/max/;
 use List::MoreUtils qw/part/;
 use Time::HiRes     qw/time/;
-use Search::Indexer;
+use Search::Indexer 0.72;
 use BerkeleyDB;
 
 use base 'Pod::POM::Web';
@@ -30,16 +30,19 @@ my $id_regex = qr/(?![0-9])       # don't start with a digit
                   (?:::\w+)*      # .. and  possibly ::some::more::components
                  /x; 
 
-my $wregex   = qr/(?:             # either a Perl variable:
-                    [\$@%]        #   initial sigil
-                    \$?           #   optional dereferencing
-                    (?:           #     followed by
-                       $id_regex  #       an id
-                       |          #     or
-                       \^?[^{\w\s]#       builtins: optional '^' and non-{ char
+my $wregex   = qr/(?:                  # either a Perl variable:
+                    (?:\$\#?|\@|\%)    #   initial sigil
+                    (?:                #     followed by
+                       $id_regex       #       an id
+                       |               #     or
+                       \^\w            #       builtin var with '^' prefix
+                       |               #     or
+                       (?:[\#\$](?!\w))#       just '$$' or '$#'
+                       |               #     or
+                       [^{\w\s\$]      #       builtin vars with 1 special char
                      )
-                     |            # or
-                     $id_regex    # a plain word or module name
+                     |                 # or
+                     $id_regex         # a plain word or module name
                  )/x;
 
 
@@ -62,7 +65,7 @@ my @stopwords = (
      keys
      last le lt
      many may me method might must my
-     ne new next no not
+     ne new next no nor not
      of on only or other our
      package perl pl pm pod push
      qq qr qw
@@ -79,20 +82,35 @@ my $stopwords_regex = join "|", map quotemeta, @stopwords;
    $stopwords_regex = qr/^(?:$stopwords_regex)$/;
 
 
-sub new {
-  my ($class, @args) = @_;
-  my $self  = {@args};
-  bless $self, $class;
-}
+#----------------------------------------------------------------------
+# RETRIEVING
+#----------------------------------------------------------------------
 
 
 sub fulltext {
   my ($self, $search_string) = @_;
 
-  my $indexer = new Search::Indexer(dir       => $index_dir,
-                                    wregex    => $wregex,
-                                    preMatch  => '[[',
-                                    postMatch => ']]');
+  my $indexer = eval {
+    new Search::Indexer(dir       => $index_dir,
+                        wregex    => $wregex,
+                        preMatch  => '[[',
+                        postMatch => ']]');
+  } or die <<__EOHTML__;
+No fulltext index found. 
+Please ask your system administrator to run the 
+command 
+
+<pre>
+  perl [-I some/special/dirs] -MPod::POM::Web::Indexer -e "Pod::POM::Web::Indexer->new->index_all"
+</pre>
+
+Indexing may take about half an hour and and will use about
+30-50 MB on your hard disk.
+__EOHTML__
+
+  # force Some::Module::Name into "Some::Module::Name" to prevent 
+  # interpretation of ':' as a field name by Query::Parser
+  $search_string =~ s/(^|\s)([\w]+(?:::\w+)+)(\s|$)/$1"$2"$3/g;
 
   my $result = $indexer->search($search_string);
 
@@ -101,7 +119,7 @@ sub fulltext {
 <html>
 <head>
   <link href="$lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="$lib/GvaScript_doc.css" rel="stylesheet" type="text/css">
+  <link href="$lib/PodPomWeb.css" rel="stylesheet" type="text/css">
   <style>
     .src {font-size:70%; float: right}
     .sep {font-size:110%; font-weight: bolder; color: magenta;
@@ -142,11 +160,9 @@ __EOHTML__
 
     foreach my $id (@doc_ids) {
       my ($mtime, $path) = split "\t", $self->{_docs}{$id}, 2;
-      my $score    = $scores->{$id};
-      my $filename = $self->find_sourcefile($path);
-
-      my $buf = $self->slurp_file($filename);
-
+      my $score     = $scores->{$id};
+      my @filenames = $self->find_source($path);
+      my $buf = join "\n", map {$self->slurp_file($_)} @filenames;
       my ($description) = ($buf =~ /^=head1\s*NAME\s*(.*)$/m);
 
       my $excerpts = $indexer->excerpts($buf, $regex);
@@ -155,8 +171,6 @@ __EOHTML__
         s/\[\[/<span class='hl'>/g, s/\]\]/<\/span>/g; # highlight
       }
       $excerpts = join "<span class='sep'>/</span>", @$excerpts;
-
-
       $html .= <<__EOHTML__;
 <p>
 <a href="$self->{root_url}/source/$path" class="src">source</a>
@@ -173,13 +187,37 @@ __EOHTML__
   return $self->send_html($html);
 }
 
+sub modlist { # called by Ajax
+  my ($self, $search_string) = @_;
+
+  tie my %docs, 'BerkeleyDB::Hash', 
+    -Filename => "$index_dir/docs.bdb", 
+      -Flags    => DB_RDONLY
+        or die "open $index_dir/docs.bdb : $^E $BerkeleyDB::Error";
+
+  length($search_string) >= 2 or die "module_list: arg too short";
+  my $regex = qr/^\d+\t\Q$search_string\E/i;
+  my @names = grep {/$regex/} values  %docs;
+  s[^\d+\t][], s[/][::]g foreach @names;
+  my $json_names = "[" . join(",", map {qq{"$_"}} sort @names) . "]";
+  return $self->send_content({content   => $json_names,
+                              mime_type => 'application/x-json'});
+}
+
+
+#----------------------------------------------------------------------
+# INDEXING
+#----------------------------------------------------------------------
+
 
 sub index_all {
   my ($self) = @_;
 
+  -d $index_dir or mkdir $index_dir or die "mkdir $index_dir: $!";
+
   # create temp dir for the new index
   my $new_index_dir = "$index_dir/_new_index";
-  -d $new_index_dir or mkdir $new_index_dir or die $!;
+  -d $new_index_dir or mkdir $new_index_dir or die "mkdir $new_index_dir: $!";
   foreach my $file (glob("$new_index_dir/*.bdb")) {
     print STDERR "UNLINK $file\n" and unlink $file or die $!;
   }
@@ -202,11 +240,10 @@ sub index_all {
 
   # move created index to production dir (might not work if files are
   # currently opened through modperl !)
-  chdir $new_index_dir or die $!;
+    chdir $new_index_dir or die "chdir $new_index_dir: $!";
   foreach my $file (glob("*.bdb")) {
-    rename $file, ".." or die $!;
+    rename $file, "$index_dir/$file" or die "rename $file $index_dir/$file: $!";
   }
-
 }
 
 
@@ -222,7 +259,6 @@ sub index_dir {
   my ($dirs, $files) = part { -d $_ ? 0 : 1} grep {!/^\./} readdir $dh;
   $dirs ||= [], $files ||= [];
   closedir $dh;
-
 
   my %extensions;
   foreach my $file (sort @$files) {
@@ -252,14 +288,12 @@ sub index_file {
   my $t0 = time;
 
   my $buf = ""; # will contain .pm file, or .pod, or both concatenated
-  my $mtime = 0;
+  my $max_mtime = 0;
   foreach my $ext (qw/pm pod/) { 
     next unless $has_ext->{$ext};
-    open my $fh, "$file.$ext" or die "open $file.$ext: $!";
-    $mtime = max($mtime, (stat $fh)[9]);
-    local $/ = undef;
-    $buf .= <$fh> ;
-    close $fh;
+    my ($text, $mtime) = $self->slurp_file("$file.$ext");
+    $mtime = max($max_mtime, $mtime);
+    $buf .= $text . "\n";
   }
 
   $buf =~ s/^=head1\s+($ignore_headings).*$//m; # remove full line of those
@@ -271,8 +305,12 @@ sub index_file {
   my $interval = time - $t0;
   printf STDERR "%0.3f s.\n", $interval;
 
-  $self->{_docs}{$doc_id} = "$mtime\t$fullpath";
+  $self->{_docs}{$doc_id} = "$max_mtime\t$fullpath";
 }
+
+
+
+
 
 
 1;
@@ -331,5 +369,4 @@ how many modules are installed.
 
 
 =cut
-
 
