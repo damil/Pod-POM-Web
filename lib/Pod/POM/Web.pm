@@ -3,31 +3,34 @@ use strict;
 use warnings;
 no warnings 'uninitialized';
 
-use Pod::POM;                   # for parsing Pod
+use Pod::POM 0.17;              # for parsing Pod
 use List::MoreUtils qw/uniq/;
 use Module::CoreList;           # for asking if a module belongs to Perl core
 use HTTP::Daemon;               # for the builtin HTTP server
 use URI;                        # for parsing incoming requests
 use URI::QueryParam;
+use Alien::GvaScript;
 
 
 #----------------------------------------------------------------------
 # globals
 #----------------------------------------------------------------------
 
-our $VERSION = '0.01';
+our $VERSION = '1.01';
 
 # some subdirs never contain Pod documentation
 my @ignore_toc_dirs = qw/auto unicore/; 
 
 # filter @INC (don't want '.', nor server_root added by mod_perl)
 my $server_root = eval {Apache2::ServerUtil::server_root()} || "";
-our @search_dirs = grep {$_ ne '.' && $_ ne $server_root} @INC;
+our                # because accessed from Pod::POM::Web::Indexer
+   @search_dirs = grep {$_ ne '.' && $_ ne $server_root} @INC;
+
 
 my $coloring_package = eval {require ActiveState::Scineplex} ? "SCINEPLEX"
-                     : eval {require PPI::HTML}              ? "PPI" : "";
+                     : eval {require PPI::HTML}              ? "PPI"      : "";
 
-my $has_indexer = eval {require Pod::POM::Web::Indexer};
+my $no_indexer = eval {require Pod::POM::Web::Indexer} ? 0 : $@;
 
 
 
@@ -67,8 +70,8 @@ sub new  {
   my ($class, $request, $response) = @_; 
   my $self;
 
-  # cheat: will create an instance of the subclass if possible
-  if ($has_indexer && $class eq __PACKAGE__) {
+  # cheat: will create an instance of the Indexer subclass if possible
+  if (!$no_indexer && $class eq __PACKAGE__) {
     $class = "Pod::POM::Web::Indexer";
   }
 
@@ -320,25 +323,28 @@ sub toc_for { # partial toc (called through Ajax)
 
 sub main_toc { # 
   my ($self) = @_;
+  my $perldocs = $self->find_entries_for("pod"); # most perldocs are under pod/perl*
+
   my $entries  = $self->find_entries_for("");    # files found at root level
-  my (%pragmas, %modules);
-  my $perldocs = $self->find_entries_for("pod"); # perldocs are under pod/perl*
+  delete $entries->{$_} foreach @ignore_toc_dirs; 
 
   # classify entries in 3 sections (perldocs, pragmas, modules)
+  my (%pragmas, %modules);
   foreach my $k (keys %$entries) { 
     my $which = $k =~ /^perl/        ? $perldocs : 
                 $k =~ /^[[:lower:]]/ ? \%pragmas : \%modules;
     $which->{$k} = delete $entries->{$k};
   }
+
+  # cleanup perldocs
   foreach my $k (keys %$perldocs) {
-    if ($k =~ /^perl/) {
-      $perldocs->{$k}{node} =~ s[^[pP]od/][];
+    if ($k =~ /^perl/) {           # just keep docs starting with "perl*"
+      $perldocs->{$k}{node} =~ s[^[pP]od/][]; # remove initial directory
     }
     else {
       delete $perldocs->{$k};
     } 
   }
-  delete $pragmas{$_} foreach @ignore_toc_dirs; 
 
   return $self->wrap_main_toc($self->htmlize_perldocs($perldocs),
                               $self->htmlize_entries(\%pragmas),
@@ -357,7 +363,11 @@ sub find_entries_for {
       next if $name =~ /^\./;
       my $is_dir  = -d "$dirname/$name";
       my $has_pod = $name =~ s/\.(pm|pod)$//;
-      if ($is_dir || $has_pod) {
+
+      # skip if this subdir is a member of @INC (not a real module namespace)
+      next if $is_dir and grep {m[^\Q$dirname/$name\E]} @search_dirs;
+
+      if ($is_dir || $has_pod) { # found a TOC entry
         $entries{$name}{node} = $prefix ? "$prefix/$name" : $name;
         $entries{$name}{dir}  = 1 if $is_dir;
         $entries{$name}{pod}  = 1 if $has_pod;
@@ -371,10 +381,9 @@ sub find_entries_for {
 
 sub htmlize_perldocs {
   my ($self, $perldocs) = @_;
+  my $parser  = Pod::POM->new;
 
   # Pod/perl.pom Synopsis contains a classification of perl*.pod documents
-
-  my $parser  = Pod::POM->new;
   my $source  = $self->slurp_file($self->find_source("perl"));
   my $perlpom = $parser->parse_text($source) or die $parser->error;
 
@@ -393,11 +402,12 @@ sub htmlize_perldocs {
     }
     $html .= closed_node(label   => "<b>$title</b>", 
                          content => $leaves);
-
   }
 
-  $html .= closed_node(label   => '<b>Unclassified</b>', 
-                       content => htmlize_entries($perldocs));
+  if (keys %$perldocs) {
+    $html .= closed_node(label   => '<b>Unclassified</b>', 
+                         content => htmlize_entries($perldocs));
+  }
 
   return $html;
 }
@@ -438,7 +448,7 @@ sub wrap_main_toc {
   my @funcs = map {$_->title} grep {$_->content =~ /\S/} $self->perlfunc_items;
   s|[/\s(].*||s foreach @funcs;
   my $json_funcs = "[" . join(",", map {qq{"$_"}} uniq @funcs) . "]";
-  my $js_has_indexer = $has_indexer ? 'true' : 'false';
+  my $js_no_indexer = $no_indexer ? 'true' : 'false';
   return $self->send_html(<<__EOHTML__);
 <html>
 <head>
@@ -451,7 +461,7 @@ sub wrap_main_toc {
     var perlfuncs = $json_funcs;
     var treeNavigator;
     var completers = {};
-    var has_indexer = $js_has_indexer;
+    var no_indexer = $js_no_indexer;
 
     function setup() {
       treeNavigator 
@@ -459,7 +469,7 @@ sub wrap_main_toc {
       completers.perlfunc = new GvaScript.AutoCompleter(
              perlfuncs, 
              {minimumChars: 1, minWidth: 100, offsetX: -20});
-      if (has_indexer)
+      if (!no_indexer)
         completers.modlist  = new GvaScript.AutoCompleter(
              "search?source=modlist&search=", 
              {minimumChars: 2, minWidth: 100, offsetX: -20, typeAhead: false});
@@ -473,7 +483,7 @@ sub wrap_main_toc {
 
      switch (input.form.source.selectedIndex) {
        case 0: completers.perlfunc.autocomplete(input); break;
-       case 2: if (has_indexer)
+       case 2: if (!no_indexer)
                  completers.modlist.autocomplete(input); 
                break;
      }
@@ -502,16 +512,20 @@ sub wrap_main_toc {
      style="width:100%; text-align:center;border-bottom: 1px solid">
 Perl Documentation
 </div>
-<a href="Pod/POM/Web/Help" class="small_title" style="float:right">Help</a>
-<br><span class="small_title">Search in</span>
+<div style="width:100%; text-align:right">
+<a href="Pod/POM/Web/Help" class="small_title">Help</a>
+</div>
+
 <form action="search" method="get">
+<span class="small_title">Search in</span>
      <select name="source">
       <option>perlfunc</option>
       <option>perlfaq</option>
       <option>modules</option>
       <option>fulltext</option>
-     </select><span class="small_title">for</span><input 
-         name="search" size="9"
+     </select><br>
+<span class="small_title">&nbsp;for</span><input 
+         name="search" size="15"
          autocomplete="off"
          onfocus="maybe_complete(this)">
 </form>
@@ -547,9 +561,10 @@ sub dispatch_search {
                 modlist  => 'modlist', 
                 }->{$source}  or die "cannot search in '$source'";
 
-  if ($method =~ /fulltext|modlist/ and not $has_indexer) {
-    die "please ask your system administrator to install "
-      . "<b>Search::Indexer</b> in order to use this method";
+  if ($method =~ /fulltext|modlist/ and $no_indexer) {
+    die "<p>this method requires <b>Search::Indexer</b></p>"
+      . "<p>please ask your system administrator to install it</p>"
+      . "(<small>error message : $no_indexer</small>)";
   }
 
   return $self->$method($params->{search});
@@ -657,14 +672,19 @@ __EOHTML__
 
 sub lib_file {
   my ($self, $filename) = @_;
-  (my $full_filename = __FILE__) =~ s[\.pm$][/lib/$filename];
+  my $dir = Alien::GvaScript->path;  # most lib files are in GvaScript
+  if ($filename eq 'PodPomWeb.css') { # except PodPomWeb.css
+      ($dir = __FILE__) =~ s[\.pm$][/lib];
+  }
+
   (my $extension = $filename) =~ s/.*\.//;
   my $mime_type = {html => 'text/html',
                    css  => 'text/css', 
                    js   => 'application/x-javascript',
                    gif  => 'image/gif'}->{$extension}
                      or die "lib_file($filename): unexpected extension";
-  my ($content, $mtime) = $self->slurp_file($full_filename);
+  my $content = $self->slurp_file("$dir/$filename");
+  my $mtime   = (stat "$dir/$filename")[9];
   $self->send_content({content   => $content, 
                        mtime     => $mtime, 
                        mime_type => $mime_type});
@@ -757,10 +777,9 @@ sub leaf {
 sub slurp_file {
   my ($self, $file) = @_;
   open my $fh, $file or die "open $file: $!";
-  my $mtime = (stat $fh)[9];
+  binmode($fh, ":crlf");
   local $/ = undef;
-  my $content = <$fh>;
-  return wantarray ? ($content, $mtime) : $content;
+  return <$fh>;
 }
 
 
@@ -1182,7 +1201,7 @@ Then navigate to URL L<http://localhost/perldoc>.
 =head3 As a cgi-bin script 
 
 Alternatively, you can run this application as a cgi-script
-by writing simple file in your C<cgi-bin> directory, like this :
+by writing a simple file in your C<cgi-bin> directory, like this :
 
   #!/path/to/perl
   use Pod::POM::Web;
@@ -1199,7 +1218,7 @@ run it as a basic mod_perl handler.
 A third way to use this application is to start a process invoking
 the builtin HTTP server :
 
-  /path/to/perl -MPod::POM::Web -e "Pod::POM::Web->server"
+  perl -MPod::POM::Web -e "Pod::POM::Web->server"
 
 This is useful if you have no other HTTP server, or if
 you want to run this module under the perl debugger.
@@ -1217,7 +1236,7 @@ an alias to the F<perl/site/lib/Pod/POM/Web/lib> directory.
 This application is intented as a power tool for Perl developers, 
 not as an Internet application. It will display the documentation and source
 code of any module installed under your C<@INC> path or
-Apache C<lib/perl> directory, so it is probably a bad idea
+Apache C<lib/perl> directory, so it is probably a B<bad idea>
 to put it on a public Internet server.
 
 =head2 Optional features
@@ -1288,7 +1307,7 @@ your bug as I make changes.
 
 =head1 AUTHOR
 
-Laurent Dami, C<< <laurent.dami at justice.ge.ch> >>
+Laurent Dami, C<< <laurent.d...@justice.ge.ch> >>
 
 
 =head1 COPYRIGHT & LICENSE

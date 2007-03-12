@@ -5,14 +5,19 @@ use warnings;
 no warnings 'uninitialized';
 
 use Pod::POM;
-use List::Util      qw/max/;
+use List::Util      qw/min max/;
 use List::MoreUtils qw/part/;
 use Time::HiRes     qw/time/;
-use Search::Indexer 0.72;
+use Search::Indexer 0.73;
 use BerkeleyDB;
 
 use base 'Pod::POM::Web';
 
+#----------------------------------------------------------------------
+# Initializations
+#----------------------------------------------------------------------
+
+my $defaut_max_size_for_indexing = 300 << 10; # 300K
 
 my $ignore_dirs = qr[
       auto | unicore | DateTime/TimeZone | DateTime/Locale    ]x;
@@ -22,8 +27,6 @@ my $ignore_headings = qr[
       BUGS     | AUTHOR      | SEE\ ALSO | COPYRIGHT | LICENSE ]x;
 
 (my $index_dir = __FILE__) =~ s[Indexer\.pm$][index];
-
-my %seen_path;
 
 my $id_regex = qr/(?![0-9])       # don't start with a digit
                   \w\w+           # start with 2 or more word chars ..
@@ -48,16 +51,13 @@ my $wregex   = qr/(?:                  # either a Perl variable:
 
 my @stopwords = (
   'a' .. 'z', '_', '0' .. '9',
-
   qw/__data__ __end__ $class $self
      above after all also always an and any are as at
      be because been before being both but by
      can cannot could
      die do don done
      defined do does doesn
-     else elsif
-     each
-     eq
+     each else elsif eq
      for from
      ge gt
      has have how
@@ -78,9 +78,6 @@ my @stopwords = (
      you your/
 );
 
-my $stopwords_regex = join "|", map quotemeta, @stopwords;
-   $stopwords_regex = qr/^(?:$stopwords_regex)$/;
-
 
 #----------------------------------------------------------------------
 # RETRIEVING
@@ -96,23 +93,20 @@ sub fulltext {
                         preMatch  => '[[',
                         postMatch => ']]');
   } or die <<__EOHTML__;
-No fulltext index found. 
+No fulltext index found ($@). 
+<p>
 Please ask your system administrator to run the 
 command 
-
+</p>
 <pre>
-  perl [-I some/special/dirs] -MPod::POM::Web::Indexer -e "Pod::POM::Web::Indexer->new->index_all"
+  perl -MPod::POM::Web::Indexer -e "Pod::POM::Web::Indexer->new->index"
 </pre>
 
 Indexing may take about half an hour and and will use about
-30-50 MB on your hard disk.
+10 MB on your hard disk.
 __EOHTML__
 
-  # force Some::Module::Name into "Some::Module::Name" to prevent 
-  # interpretation of ':' as a field name by Query::Parser
-  $search_string =~ s/(^|\s)([\w]+(?:::\w+)+)(\s|$)/$1"$2"$3/g;
 
-  my $result = $indexer->search($search_string);
 
   my $lib = "$self->{root_url}/lib";
   my $html = <<__EOHTML__;
@@ -128,50 +122,43 @@ __EOHTML__
   </style>
 </head>
 <body>
-<h1>Search results</h1>
 __EOHTML__
 
-  my $truncated = "";
 
-  if (!$result) {
-    $self->print("no results");
-  }
-  else {
-    my $killedWords = join ", ", @{$result->{killedWords}};
-    $killedWords &&= " (ignoring words : $killedWords)";
-    my $regex = $result->{regex};
+  # force Some::Module::Name into "Some::Module::Name" to prevent 
+  # interpretation of ':' as a field name by Query::Parser
+  $search_string =~ s/(^|\s)([\w]+(?:::\w+)+)(\s|$)/$1"$2"$3/g;
 
-    my $scores = $result->{scores};
+  my $result = $indexer->search($search_string, 'implicit_plus');
 
-    my @doc_ids = sort {$scores->{$b} <=> $scores->{$a}} keys %$scores;
-    my $n_docs = @doc_ids;
+  my $killedWords = join ", ", @{$result->{killedWords}};
+  $killedWords &&= " (ignoring words : $killedWords)";
+  my $regex = $result->{regex};
 
-    $html .= "<p>searched for '$search_string'$killedWords,"
-          .  " $n_docs results found</p>";
+  my $scores = $result->{scores};
+  my @doc_ids = sort {$scores->{$b} <=> $scores->{$a}} keys %$scores;
 
-    tie %{$self->{_docs}}, 'BerkeleyDB::Hash', 
-      -Filename => "$index_dir/docs.bdb", 
-      -Flags    => DB_RDONLY
-          or die "open $index_dir/docs.bdb : $^E $BerkeleyDB::Error";
+  my $nav_links = $self->paginate_results(\@doc_ids);
 
-    $truncated = <<__EOHTML__ if splice @doc_ids, 50;
-<b>Too many results, please try a more specific search</b>
-__EOHTML__
+  $html .= "<b>Fulltext search</b> for '$search_string'$killedWords<br>"
+         . "$nav_links<hr>\n";
 
-    foreach my $id (@doc_ids) {
-      my ($mtime, $path) = split "\t", $self->{_docs}{$id}, 2;
-      my $score     = $scores->{$id};
-      my @filenames = $self->find_source($path);
-      my $buf = join "\n", map {$self->slurp_file($_)} @filenames;
-      my ($description) = ($buf =~ /^=head1\s*NAME\s*(.*)$/m);
+  $self->_tie_docs(DB_RDONLY);
 
-      my $excerpts = $indexer->excerpts($buf, $regex);
-      foreach (@$excerpts) {
-        s/&/&amp;/g,  s/</&lt;/g, s/>/&gt;/g;          # replace entities
-        s/\[\[/<span class='hl'>/g, s/\]\]/<\/span>/g; # highlight
-      }
-      $excerpts = join "<span class='sep'>/</span>", @$excerpts;
-      $html .= <<__EOHTML__;
+  foreach my $id (@doc_ids) {
+    my ($mtime, $path) = split "\t", $self->{_docs}{$id}, 2;
+    my $score     = $scores->{$id};
+    my @filenames = $self->find_source($path);
+    my $buf = join "\n", map {$self->slurp_file($_)} @filenames;
+    my ($description) = ($buf =~ /^=head1\s*NAME\s*(.*)$/m);
+
+    my $excerpts = $indexer->excerpts($buf, $regex);
+    foreach (@$excerpts) {
+      s/&/&amp;/g,  s/</&lt;/g, s/>/&gt;/g; # replace entities
+      s/\[\[/<span class='hl'>/g, s/\]\]/<\/span>/g; # highlight
+    }
+    $excerpts = join "<span class='sep'>/</span>", @$excerpts;
+    $html .= <<__EOHTML__;
 <p>
 <a href="$self->{root_url}/source/$path" class="src">source</a>
 <a href="$self->{root_url}/$path">$path</a>
@@ -180,24 +167,50 @@ __EOHTML__
 <small>$excerpts</small>
 </p>
 __EOHTML__
-    }
   }
 
-  $html .= "$truncated</body></html>\n";
+  $html .= "<hr>$nav_links\n";
   return $self->send_html($html);
 }
+
+
+
+sub paginate_results {
+  my ($self, $doc_ids_ref) = @_;
+
+  my $n_docs       = @$doc_ids_ref;
+  my $count        = $self->{params}{count} || 50;
+  my $start_record = $self->{params}{start} || 0;
+  my $end_record   = min($start_record + $count - 1, $n_docs - 1);
+  @$doc_ids_ref    = @$doc_ids_ref[$start_record ... $end_record];
+  my $prev_idx     = max($start_record - $count, 0);
+  my $next_idx     = $start_record + $count;
+  my $base_url     = "?source=fulltext&search=$self->{params}{search}";
+  my $prev_link
+    = $start_record > 0 ? uri_escape("$base_url&start=$prev_idx") : "";
+  my $next_link
+    = $next_idx < $n_docs ? uri_escape("$base_url&start=$next_idx") : "";
+  $_ += 1 for $start_record, $end_record;
+  my $nav_links = "";
+  $nav_links .= "<a href='$prev_link'>[Previous &lt;&lt;]</a> " if $prev_link;
+  $nav_links .= "Results <b>$start_record</b> to <b>$end_record</b> "
+              . "from <b>$n_docs</b>";
+  $nav_links .= " <a href='$next_link'>[&gt;&gt; Next]</a> " if $next_link;
+  return $nav_links;
+}
+
+
+
+
 
 sub modlist { # called by Ajax
   my ($self, $search_string) = @_;
 
-  tie my %docs, 'BerkeleyDB::Hash', 
-    -Filename => "$index_dir/docs.bdb", 
-      -Flags    => DB_RDONLY
-        or die "open $index_dir/docs.bdb : $^E $BerkeleyDB::Error";
+  $self->_tie_docs(DB_RDONLY);
 
   length($search_string) >= 2 or die "module_list: arg too short";
   my $regex = qr/^\d+\t\Q$search_string\E/i;
-  my @names = grep {/$regex/} values  %docs;
+  my @names = grep {/$regex/} values %{$self->{_docs}};
   s[^\d+\t][], s[/][::]g foreach @names;
   my $json_names = "[" . join(",", map {qq{"$_"}} sort @names) . "]";
   return $self->send_content({content   => $json_names,
@@ -210,51 +223,67 @@ sub modlist { # called by Ajax
 #----------------------------------------------------------------------
 
 
-sub index_all {
-  my ($self) = @_;
+sub index {
+  my ($self, %options) = @_;
 
+  # check invalid options
+  die "invalid option : $_" 
+    if grep {!/^-(from_scratch|max_size|positions)$/} keys %options;
+
+  # make sure index dir exists
   -d $index_dir or mkdir $index_dir or die "mkdir $index_dir: $!";
 
-  # create temp dir for the new index
-  my $new_index_dir = "$index_dir/_new_index";
-  -d $new_index_dir or mkdir $new_index_dir or die "mkdir $new_index_dir: $!";
-  foreach my $file (glob("$new_index_dir/*.bdb")) {
-    print STDERR "UNLINK $file\n" and unlink $file or die $!;
+  # if -from_scratch, throw away old index 
+  if ($options{-from_scratch}) {
+    unlink $_ or die "unlink $_ : $!" foreach glob("$index_dir/*.bdb");
   }
 
-  # do the work 
-  $self->{_last_doc_id} = 0;
+  # store global info for indexing methods
+  $self->{_seen_path}             = {};
+  $self->{_last_doc_id}           = 0;
+  $self->{_max_size_for_indexing} = $options{-max_size}
+                                 || $defaut_max_size_for_indexing;
 
-  tie %{$self->{_docs}}, 'BerkeleyDB::Hash', 
-      -Filename => "$new_index_dir/docs.bdb", 
-      -Flags    => DB_CREATE
-	or die "open $new_index_dir/docs.bdb : $^E $BerkeleyDB::Error";
+  # tie to docs.bdb, storing {$doc_id => "$mtime\t$pathname"}
+  $self->_tie_docs(DB_CREATE);
 
+  # build in-memory reverse index of info contained in %{$self->{_docs}}
+  $self->{_max_doc_id}     = 0;
+  $self->{_previous_index} = {};
+  while (my ($id, $doc_descr) = each %{$self->{_docs}}) {
+    $self->{_max_doc_id} = max($id, $self->{_max_doc_id});
+    my ($mtime, $path) = split /\t/, $doc_descr;
+    $self->{_previous_index}{$path} = {id => $id, mtime => $mtime};
+  }
 
-  $self->{_indexer} = new Search::Indexer(dir       => $new_index_dir,
+  # open the index
+  $self->{_indexer} = new Search::Indexer(dir       => $index_dir,
                                           writeMode => 1,
+                                          positions => $options{-positions},
                                           wregex    => $wregex,
                                           stopwords => \@stopwords);
-  $self->index_dir($_) foreach @Pod::POM::Web::search_dirs; # TODO : method call
-  undef $self->{_indexer};
 
-  # move created index to production dir (might not work if files are
-  # currently opened through modperl !)
-    chdir $new_index_dir or die "chdir $new_index_dir: $!";
-  foreach my $file (glob("*.bdb")) {
-    rename $file, "$index_dir/$file" or die "rename $file $index_dir/$file: $!";
-  }
+  # main indexing loop
+  $self->index_dir($_) foreach @Pod::POM::Web::search_dirs; 
+
+  $self->{_indexer} = $self->{_docs} = undef;
 }
-
 
 
 sub index_dir {
   my ($self, $rootdir, $path) = @_;
   return if $path =~ /$ignore_dirs/;
 
-  my $dir = $path ? "$rootdir/$path" : $rootdir;
+  my $dir = $rootdir;
+  if ($path) {
+    $dir .= "/$path";
+    return print STDERR "SKIP DIR $dir (already in \@INC)\n"
+      if grep {m[^\Q$dir\E]} @Pod::POM::Web::search_dirs;
+  }
+
+  chdir $dir or return print STDERR "SKIP DIR $dir (chdir $dir: $!)\n";
+
   print STDERR "DIR $dir\n";
-  chdir $dir or return print STDERR "SKIP DIR (chdir $dir: $!)\n";
   opendir my $dh, "." or die $^E;
   my ($dirs, $files) = part { -d $_ ? 0 : 1} grep {!/^\./} readdir $dh;
   $dirs ||= [], $files ||= [];
@@ -280,37 +309,72 @@ sub index_file {
 
   my $fullpath = $path ? "$path/$file" : $file;
   return print STDERR "SKIP $fullpath (shadowing)\n"
-    if $seen_path{$fullpath};
-  $seen_path{$fullpath} 
-    = my $doc_id = ++$self->{_last_doc_id};
+    if $self->{_seen_path}{$fullpath};
 
-  print STDERR "$doc_id INDEXING $fullpath ... ";
-  my $t0 = time;
-
-  my $buf = ""; # will contain .pm file, or .pod, or both concatenated
+  $self->{_seen_path}{$fullpath} = 1;
   my $max_mtime = 0;
+  my ($size, $mtime, @filenames);
+ EXT:
   foreach my $ext (qw/pm pod/) { 
-    next unless $has_ext->{$ext};
-    my ($text, $mtime) = $self->slurp_file("$file.$ext");
-    $mtime = max($max_mtime, $mtime);
-    $buf .= $text . "\n";
+    next EXT unless $has_ext->{$ext};
+    my $filename = "$file.$ext";
+    ($size, $mtime) = (stat $filename)[7, 9] or die "stat $filename: $!";
+    $size < $self->{_max_size_for_indexing} or 
+      print STDERR "$filename too big ($size bytes), skipped " and next EXT;
+    $mtime   = max($max_mtime, $mtime);
+    push @filenames, $filename;
   }
 
-  $buf =~ s/^=head1\s+($ignore_headings).*$//m; # remove full line of those
-  $buf =~ s/^=(head\d|item)//mg; # just remove command of =head* or =item
-  $buf =~ s/^=\w.*//mg;          # remove full line of all other commands 
+  if ($mtime <= $self->{_previous_index}{$fullpath}{mtime}) {
+    return print STDERR "SKIP $fullpath (index up to date)\n";
+  }
 
-  $self->{_indexer}->add($doc_id, $buf);
+  if (@filenames) {
+    my $doc_id = $self->{_previous_index}{$fullpath}{id};
+    if ($doc_id) { $self->{_indexer}->remove($doc_id); }
+    else         { $doc_id = ++$self->{_max_doc_id};   }
 
-  my $interval = time - $t0;
-  printf STDERR "%0.3f s.\n", $interval;
+    print STDERR "INDEXING $fullpath (id $doc_id) ... ";
 
-  $self->{_docs}{$doc_id} = "$max_mtime\t$fullpath";
+    my $t0 = time;
+    my $buf = join "\n", map {$self->slurp_file($_)} @filenames;
+    $buf =~ s/^=head1\s+($ignore_headings).*$//m; # remove full line of those
+    $buf =~ s/^=(head\d|item)//mg; # just remove command of =head* or =item
+    $buf =~ s/^=\w.*//mg;          # remove full line of all other commands 
+    $self->{_indexer}->add($doc_id, $buf);
+    my $interval = time - $t0;
+    printf STDERR "%0.3f s.", $interval;
+
+    $self->{_docs}{$doc_id} = "$mtime\t$fullpath";
+  }
+
+  print STDERR "\n";
+
+}
+
+
+#----------------------------------------------------------------------
+# UTILITIES
+#----------------------------------------------------------------------
+
+sub _tie_docs {
+  my ($self, $mode) = @_;
+
+  # tie to docs.bdb, storing {$doc_id => "$mtime\t$pathname"}
+  tie %{$self->{_docs}}, 'BerkeleyDB::Hash', 
+      -Filename => "$index_dir/docs.bdb", 
+      -Flags    => $mode
+	or die "open $index_dir/docs.bdb : $^E $BerkeleyDB::Error";
 }
 
 
 
-
+sub uri_escape { 
+  my $uri = shift;
+  $uri =~ s{([^;\/?:@&=\$,A-Za-z0-9\-_.!~*'()])}
+           {sprintf("%%%02X", ord($1))         }ge;
+  return $uri;
+}
 
 
 1;
@@ -323,22 +387,78 @@ Pod::POM::Web::Indexer - fulltext search for Pod::POM::Web
 
 =head1 SYNOPSIS
 
-  perl [-I some/special/dirs] -MPod::POM::Web::Indexer \
-       -e "Pod::POM::Web::Indexer->new->index_all"
+  perl -MPod::POM::Web::Indexer -e "Pod::POM::Web::Indexer->new->index"
 
 =head1 DESCRIPTION
 
-Adds fulltext search capabilities to the Pod::POM::Web application.
+Adds fulltext search capabilities to the 
+L<Pod::POM::Web|Pod::POM::Web> application.
+This requires L<Search::Indexer|Search::Indexer> to be installed.
 
-=head2 Performances
+Queries may include plain terms, "exact phrases", 
+'+' or '-' prefixes, boolean operators and parentheses.
+See L<Search::QueryParser|Search::QueryParser> for details.
+
+
+=head1 METHODS
+
+=head2 index
+
+    Pod::POM::Web::Indexer->new->index(%options)
+
+Walks through directories in C<@INC> and indexes 
+all C<*.pm> and C<*.pod> files, skipping shadowed files
+(files for which a similar loading path was already
+found in previous C<@INC> directories), and skipping
+files that are too big.
+
+Default indexing is incremental : files whose modification
+time has not changed since the last indexing operation will
+not be indexed again.
+
+Options can be 
+
+=over
+
+=item -max_size
+
+Size limit (in bytes) above which files will not be indexed.
+The default value is 300K. 
+Files of size above this limit are usually not worth
+indexing because they only contain big configuration tables
+(like for example C<Module::CoreList> or C<Unicode::Charname>).
+
+=item -from_scratch
+
+If true, the previous index is deleted, so all files will be freshly
+indexed. If false (the default), indexation is incremental, i.e. files
+whose modification time has not changed will not be re-indexed.
+
+=item -positions
+
+If true, the indexer will also store word positions in documents, so
+that it can later answer to "exact phrase" queries. 
+
+So if C<-positions> are on, a search for C<"more than one way"> will
+only return documents which contain that exact sequence of contiguous
+words; whereas if C<-positions> are off, the query is equivalent to
+C<more AND than AND one AND way>, i.e. it returns all documents which
+contain these words anywhere and in any order.
+
+The option is off by default, because it requires much more disk
+space, and does not seem to be very relevant for searching
+Perl documentation.
+
+=back
+
+
+=head1 PERFORMANCES
 
 On my machine, indexing a module takes an average of 0.2 seconds, 
-except for some long and complex sources. Here are the worst figures
-(in seconds) :
+except for some long and complex sources (this is why sources
+above 300K are ignored by default, see options above).
+Here are the worst figures (in seconds) :
 
-  Perl/Tidy            291.969
-  Unicode/CharName     184.442
-  Pod/perltoc           40.071
   Date/Manip            39.655
   DBI                   30.73
   Pod/perlfunc          29.502
@@ -354,19 +474,17 @@ except for some long and complex sources. Here are the worst figures
   Parse/RecDescent       5.405
   Bit/Vector             4.768
 
-The total index size should be between 30MB and 50MB, depending on
+The index will be stored in an F<index> subdirectory 
+under the module installation directory.
+The total index size should be around 10MB if C<-positions> are off, 
+and between 30MB and 50MB if C<-positions> are on, depending on
 how many modules are installed.
 
 
 =head1 TODO
 
- - incremental indexing
- - add option in Search::Indexer to ignore word positions index; not very
-   relevant here, and would save a lot of disk space
- - searching some::module does not work
  - highlights in shown documents
  - paging
-
 
 =cut
 

@@ -15,9 +15,9 @@ like Ajax calls, autocompletion of search fields, etc., so
 it requires a modern browser. So far it has been tested
 on MSIE 6.0 and Firefox 2.0.
 
-=head1 SEARCHING
+=head2 Searching
 
-=head1 BROWSING
+=head2 Browsing
 
 The browsing tree starts with two sections B<Perl docs> and
 B<Pragmas>, containg core Perl documentation. The third section
@@ -32,7 +32,7 @@ keyboard. At any point in time, at most one node is I<selected> : this
 is the one that receives keyboard events. Hence if the tree has no
 selected node, no keyboard events are interpreted.
 
-=head2 Mouse events
+=head3 Mouse events
 
 Clicking on a node label selects that node,
 and displays the corresponding documentation page
@@ -43,7 +43,7 @@ documentation page).
 Clicking on the square C<+>/C<-> icon on the left of the
 label toggles the open/closed status of the node.
 
-=head2 Keyboard events
+=head3 Keyboard events
 
 
 =over
@@ -129,5 +129,5 @@ server.
 Perl documenation can be browsed in command-line mode
 through the L<perldoc> utility.
 
-See L<Pod::POM:Web> for information about how this application
+See L<Pod::POM::Web> for information about how this application
 is implemented.

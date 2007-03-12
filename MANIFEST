@@ -1,23 +1,18 @@
-Build.bat
 Build.PL
 Changes
+foo.pl
 lib/Pod/POM/Web.pm
 lib/Pod/POM/Web/Help.pod
 lib/Pod/POM/Web/Indexer.pm
-lib/Pod/POM/Web/lib/dot.gif
-lib/Pod/POM/Web/lib/GvaScript.css
-lib/Pod/POM/Web/lib/GvaScript.js
-lib/Pod/POM/Web/lib/minus.gif
-lib/Pod/POM/Web/lib/plus.gif
 lib/Pod/POM/Web/lib/PodPomWeb.css
-lib/Pod/POM/Web/lib/prototype.js
-lib/Pod/POM/Web/lib/scineplex.css
 Makefile.PL
-MANIFEST
-META.yml			# Will be created by "make dist"
-Pod-POM-Web-0.01/lib/Pod/POM/Web.pm
-pod2htmd.tmp
-pod2htmi.tmp
+MANIFEST			This list of files
+MANIFEST.mine
+MANIFEST.r35
+MANIFEST.r49
+META.yml
 README
+t/indexer.t
 t/pod.t
 t/requests.t
+t/TODO.txt
