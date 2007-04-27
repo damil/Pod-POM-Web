@@ -1,5 +1,16 @@
 Revision history for Pod-POM-Web
 
+1.04    24.04.2007
+  - patch from CDOLAN to show tooltips in module tree
+  - hyperlinks from source code to use'd modules
+
+1.03    24.04.2007
+  - t/indexer.t no longer fails if Search::Indexer is not installed
+  - a little more help in Pod::POM::Web::Help.pod
+
+1.02    22.04.2007
+  - fixes in standalone server (thanks BooK and CDOLAN) 
+
 1.01    11.03.2007
   - explicit dependency on Pod::POM 0.17
   - avoid double indexing when finding overlapping paths in @INC

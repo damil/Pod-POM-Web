@@ -16,7 +16,7 @@ use Alien::GvaScript;
 # globals
 #----------------------------------------------------------------------
 
-our $VERSION = '1.01';
+our $VERSION = '1.04';
 
 # some subdirs never contain Pod documentation
 my @ignore_toc_dirs = qw/auto unicore/; 
@@ -39,15 +39,17 @@ my $no_indexer = eval {require Pod::POM::Web::Indexer} ? 0 : $@;
 #----------------------------------------------------------------------
 
 sub server { # builtin HTTP server; unused if running under Apache
-  my $class = shift;
+  my ($class, $port) = @_;
+  $port ||= 8080;
 
-  my $port = $ARGV[0] || 8080;
-
-  my $d = HTTP::Daemon->new(LocalPort => $port) || die "could not start daemon";
+  my $d = HTTP::Daemon->new(LocalPort => $port,
+                            ReuseAddr => 1) # patch by CDOLAN
+    or die "could not start daemon on port $port";
   print STDERR "Please contact me at: <URL:", $d->url, ">\n";
   while (my $c = $d->accept) {
     while (my $req = $c->get_request) {
       print STDERR "URL : " , $req->url, "\n";
+      $c->force_last_request;               # patch by CDOLAN
       my $response = HTTP::Response->new;
       $class->handler($req, $response);
       $c->send_response($response);
@@ -61,7 +63,8 @@ sub server { # builtin HTTP server; unused if running under Apache
 sub handler : method  {
   my ($class, $request, $response) = @_; 
   my $self = $class->new($request, $response);
-  eval { $self->dispatch_request(); 1}  or $self->send_html($@);
+  eval { $self->dispatch_request(); 1}
+    or $self->send_content({content => $@, code => 500});  
   return 0; # Apache2::Const::OK;
 }
 
@@ -185,6 +188,7 @@ sub serve_source {
   foreach my $file (@files) {
     my $text = $self->slurp_file($file);
     my $view = Pod::POM::View::HTML::_PerlDoc->new(
+     root_url        => $self->{root_url},
      syntax_coloring => $params->{coloring} ? $coloring_package : "",
      line_numbering  => $params->{lines},
     );
@@ -426,12 +430,18 @@ sub htmlize_entries {
       $args{class} = 'TN_node TN_closed';
       $args{attrs} = qq{TN:contentURL='toc/$entry->{node}'};
     }
-    $args{href} = $entry->{node} if $entry->{pod};
+    if ($entry->{pod}) {
+      $args{href}     = $entry->{node};
+      $args{abstract} = $self->get_abstract($entry->{node});
+    }
     $html .= generic_node(%args);
   }
   return $html;
 }
 
+sub get_abstract {
+  # override in indexer
+}
 
 sub wrap_main_toc {
   my ($self, $perldocs, $pragmas, $modules) = @_;
@@ -693,7 +703,7 @@ sub lib_file {
 
 sub send_html {
   my ($self, $html) = @_;
-  $self->send_content({content => $_[1]});
+  $self->send_content({content => $_[1], code => 200});
 }
 
 
@@ -702,7 +712,8 @@ sub send_content {
   my ($self, $args) = @_;
   my $length    = length $args->{content};
   my $mime_type = $args->{mime_type} || "text/html";
-  my $modified = gmtime $args->{mtime};
+  my $modified  = gmtime $args->{mtime};
+  my $code      = $args->{code} || 200;
 
   my $r = $self->{response};
   for (ref $r) {
@@ -717,6 +728,7 @@ sub send_content {
     };
 
     /^HTTP::Response/ and do {
+      $r->code($code);
       $r->header(Content_type   => $mime_type,
                  Content_length => $length);
       $r->header(Last_modified  => $modified) if $args->{mtime};
@@ -739,6 +751,10 @@ sub send_content {
 #----------------------------------------------------------------------
 # generating GvaScript treeNavigator structure
 #----------------------------------------------------------------------
+my %escape_entity = ('&' => '&amp;',
+                     '<' => '&lt;',
+                     '>' => '&gt;',
+                     '"' => '&quot;');
 
 sub generic_node {
   my %args = @_;
@@ -751,6 +767,10 @@ sub generic_node {
                   : ("span", ""                     );
   $args{label_tag}   ||= $default_label_tag;
   $args{label_class} ||= "TN_label";
+  if ($args{abstract}) {
+    $args{abstract} =~ s/([&<>"])/$escape_entity{$1}/g;
+    $label_attrs .= qq{ title="$args{abstract}"};
+  }
   return qq{<div class="$args{class}"$args{attrs}>}
        .    qq{<$args{label_tag} class="$args{label_class}"$label_attrs>}
        .         $args{label}
@@ -1036,6 +1056,12 @@ sub view_verbatim {
     my $method = "${coloring}_coloring";
     $text = $self->$method($text);
   }
+
+  # hyperlinks to other modules
+  $text =~ s{(\buse\b(?:</span>)\s+(?:<span.*?>))([\w:]+)}
+            {my $url = $self->view_seq_link_transform_path($2);
+             qq{$1<a href="$url">$2</a>} }eg;
+
   if ($self->{line_numbering}) {
     my $line = 1;
     $text =~ s/^/sprintf "%6d\t", $line++/egm;
@@ -1130,8 +1156,9 @@ visiting a documentation page
 
 =item *
 
-a source code view with syntax coloring
-(this is an optional feature -- see section L</"Optional features">)
+a source code view with hyperlinks between used modules
+and optionally with syntax coloring
+(see section L</"Optional features">)
 
 
 =item *
@@ -1245,7 +1272,8 @@ to put it on a public Internet server.
 
 Syntax coloring improves readability of code excerpts.
 If your Perl distribution is from ActiveState, then 
-C<Pod::POM::Web> will take of the L<ActiveState::Scineplex> module
+C<Pod::POM::Web> will take advantage 
+of the L<ActiveState::Scineplex> module
 which is already installed on your system. Otherwise,
 you need to install L<PPI::HTML>, available from CPAN.
 
@@ -1295,6 +1323,21 @@ the wide possibilities of Andy Wardley's L<Pod::POM> parser.
 
 =back
 
+Thanks to BooK who mentioned a weakness in the API 
+and to CDolan who supplied several useful suggestions and patches.
+
+
+=head1 RELEASE NOTES
+
+Indexed information in version 1.04 is not compatible 
+with previous versions.
+
+So if you upgraded from a previous version and want to use 
+the index, you need to rebuild it entirely, by running the 
+command :
+
+  perl -MPod::POM::Web::Indexer -e "Pod::POM::Web::Indexer->new->index(-from_scratch => 1)"
+
 
 =head1 BUGS
 
@@ -1321,8 +1364,7 @@ under the same terms as Perl itself.
 
 
   - tests !
-
-  - performance, expiry headers, server-side caching
+  - performance, expiry headers
   - also serve Programs (c:/perl/bin)
 
 Bugs:

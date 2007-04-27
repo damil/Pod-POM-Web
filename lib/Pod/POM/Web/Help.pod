@@ -17,6 +17,48 @@ on MSIE 6.0 and Firefox 2.0.
 
 =head2 Searching
 
+Users can type search criteria in the single search input field
+and then hit C<RETURN>. The behaviour depends on which 
+search category was chosen in the search menu :
+
+=over
+
+=item perlfunc
+
+The input field should contain one of the (many) builtin
+perl functions. An autocompleter is automatically activated
+to help choose a proper function name. The answer will be
+an excerpt from the the L<perlfunc> documentation, just
+for that specific  function.
+
+
+=item perlfaq
+
+This will search all C<perlfaq> entries whose title contains
+the word given in the search input field.
+
+=item modules
+
+The input field should contain a module name.
+An autocompleter is automatically activated
+to help choose a proper module name. 
+The answer will be the documentation for that module.
+
+=item fulltext
+
+This only works if the local Perl installation was indexed
+(see L<Pod::POM::Web::Indexer> on how to do it).
+In that case, the input field can contain 
+one or several words, possibly connected
+by boolean operators (L<Search::QueryParser>).
+The answer will be a list of modules that
+match that query, either in the documentation
+or in the source code. Each module is presented
+with some contextual excerpts of the matching words.
+
+=back
+
+
 =head2 Browsing
 
 The browsing tree starts with two sections B<Perl docs> and
@@ -126,7 +168,7 @@ above
 L<Pod::Webserver> is another, earlier implementation of a Perl documentation 
 server.
 
-Perl documenation can be browsed in command-line mode
+Perl documentation can be browsed in command-line mode
 through the L<perldoc> utility.
 
 See L<Pod::POM::Web> for information about how this application

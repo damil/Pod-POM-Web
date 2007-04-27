@@ -1,11 +1,14 @@
 #!perl
 
 use Test::More tests => 1;
-use HTTP::Request;
-use HTTP::Response;
 
-BEGIN {
-	use_ok( 'Pod::POM::Web::Indexer' );
+
+SKIP: {
+  eval {require Search::Indexer};
+  skip "Search::Indexer does not seem to be installed", 1
+    if $@;
+  use_ok( 'Pod::POM::Web::Indexer' );  
 }
 
-# TODO ... 
+
+# TODO ... more than just a compile test

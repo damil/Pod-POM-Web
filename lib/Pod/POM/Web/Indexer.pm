@@ -102,7 +102,7 @@ command
   perl -MPod::POM::Web::Indexer -e "Pod::POM::Web::Indexer->new->index"
 </pre>
 
-Indexing may take about half an hour and and will use about
+Indexing may take about half an hour and will use about
 10 MB on your hard disk.
 __EOHTML__
 
@@ -146,11 +146,10 @@ __EOHTML__
   $self->_tie_docs(DB_RDONLY);
 
   foreach my $id (@doc_ids) {
-    my ($mtime, $path) = split "\t", $self->{_docs}{$id}, 2;
+    my ($mtime, $path, $description) = split "\t", $self->{_docs}{$id};
     my $score     = $scores->{$id};
     my @filenames = $self->find_source($path);
     my $buf = join "\n", map {$self->slurp_file($_)} @filenames;
-    my ($description) = ($buf =~ /^=head1\s*NAME\s*(.*)$/m);
 
     my $excerpts = $indexer->excerpts($buf, $regex);
     foreach (@$excerpts) {
@@ -209,12 +208,33 @@ sub modlist { # called by Ajax
   $self->_tie_docs(DB_RDONLY);
 
   length($search_string) >= 2 or die "module_list: arg too short";
-  my $regex = qr/^\d+\t\Q$search_string\E/i;
-  my @names = grep {/$regex/} values %{$self->{_docs}};
-  s[^\d+\t][], s[/][::]g foreach @names;
-  my $json_names = "[" . join(",", map {qq{"$_"}} sort @names) . "]";
+  my $regex = qr/^\d+\t(\Q$search_string\E[^\t]*)/i;
+
+  my @modules;
+  foreach my $val (values %{$self->{_docs}}) {
+    $val =~ $regex or next;
+    (my $module = $1) =~ s[/][::]g;
+    push @modules, $module;
+  }
+
+  my $json_names = "[" . join(",", map {qq{"$_"}} sort @modules) . "]";
   return $self->send_content({content   => $json_names,
                               mime_type => 'application/x-json'});
+}
+
+
+sub get_abstract {  # override from Web.pm
+  my ($self, $path) = @_;
+  if (!$self->{_path_to_descr}) {
+    eval {$self->_tie_docs(DB_RDONLY); 1} 
+      or return; # database not found
+    $self->{_path_to_descr} = { 
+      map {(split /\t/, $_)[1,2]} values %{$self->{_docs}} 
+     };
+  }
+  my $description = $self->{_path_to_descr}->{$path} or return;
+  (my $abstract = $description) =~ s/^.*?-\s*//;
+  return $abstract;
 }
 
 
@@ -244,7 +264,7 @@ sub index {
   $self->{_max_size_for_indexing} = $options{-max_size}
                                  || $defaut_max_size_for_indexing;
 
-  # tie to docs.bdb, storing {$doc_id => "$mtime\t$pathname"}
+  # tie to docs.bdb, storing {$doc_id => "$mtime\t$pathname\t$description"}
   $self->_tie_docs(DB_CREATE);
 
   # build in-memory reverse index of info contained in %{$self->{_docs}}
@@ -252,8 +272,9 @@ sub index {
   $self->{_previous_index} = {};
   while (my ($id, $doc_descr) = each %{$self->{_docs}}) {
     $self->{_max_doc_id} = max($id, $self->{_max_doc_id});
-    my ($mtime, $path) = split /\t/, $doc_descr;
-    $self->{_previous_index}{$path} = {id => $id, mtime => $mtime};
+    my ($mtime, $path, $description) = split /\t/, $doc_descr;
+    $self->{_previous_index}{$path}
+      = {id => $id, mtime => $mtime, description => $description};
   }
 
   # open the index
@@ -338,6 +359,9 @@ sub index_file {
 
     my $t0 = time;
     my $buf = join "\n", map {$self->slurp_file($_)} @filenames;
+    my ($description) = ($buf =~ /^=head1\s*NAME\s*(.*)$/m);
+    $description ||= '';
+    $description =~ s/\t/ /g;
     $buf =~ s/^=head1\s+($ignore_headings).*$//m; # remove full line of those
     $buf =~ s/^=(head\d|item)//mg; # just remove command of =head* or =item
     $buf =~ s/^=\w.*//mg;          # remove full line of all other commands 
@@ -345,7 +369,7 @@ sub index_file {
     my $interval = time - $t0;
     printf STDERR "%0.3f s.", $interval;
 
-    $self->{_docs}{$doc_id} = "$mtime\t$fullpath";
+    $self->{_docs}{$doc_id} = "$mtime\t$fullpath\t$description";
   }
 
   print STDERR "\n";
@@ -360,7 +384,7 @@ sub index_file {
 sub _tie_docs {
   my ($self, $mode) = @_;
 
-  # tie to docs.bdb, storing {$doc_id => "$mtime\t$pathname"}
+  # tie to docs.bdb, storing {$doc_id => "$mtime\t$pathname\t$description"}
   tie %{$self->{_docs}}, 'BerkeleyDB::Hash', 
       -Filename => "$index_dir/docs.bdb", 
       -Flags    => $mode
