@@ -18,10 +18,12 @@ my $builder = Module::Build->new(
       'HTTP::Daemon'         => 0,
       'URI'                  => 0,
       'URI::QueryParam'      => 0,
+      'Encode::Guess'        => 0,
       },
     recommends => {
-      'Search::Indexer' => 0.73,
-      'PPI::HTML'       => 0,
+      'Search::Indexer'           => 0.73,
+      'PPI::HTML'                 => 0,
+      'AnnoCPAN::Perldoc::Filter' => 0,
     },
     build_requires => {
       'Test::More' => 0,

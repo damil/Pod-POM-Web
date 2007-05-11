@@ -10,13 +10,13 @@ use HTTP::Daemon;               # for the builtin HTTP server
 use URI;                        # for parsing incoming requests
 use URI::QueryParam;
 use Alien::GvaScript;
-
+use Encode::Guess;
 
 #----------------------------------------------------------------------
 # globals
 #----------------------------------------------------------------------
 
-our $VERSION = '1.04';
+our $VERSION = '1.05';
 
 # some subdirs never contain Pod documentation
 my @ignore_toc_dirs = qw/auto unicore/; 
@@ -31,6 +31,23 @@ my $coloring_package = eval {require ActiveState::Scineplex} ? "SCINEPLEX"
                      : eval {require PPI::HTML}              ? "PPI"      : "";
 
 my $no_indexer = eval {require Pod::POM::Web::Indexer} ? 0 : $@;
+
+# A sequence of optional filters to apply to the source code before
+# running it through Pod::POM. Source code is passed in $_[0] and 
+# should be modified in place.
+
+my @podfilters = (
+
+  # AnnoCPAN must be first in the filter list because 
+  # it uses the MD5 of the original source
+  eval {require AnnoCPAN::Perldoc::Filter} 
+    ? sub {$_[0] = AnnoCPAN::Perldoc::Filter->new->filter($_[0])} 
+    : (),
+
+  # Pod::POM fails to parse correctly when there is an initial blank line
+  sub { $_[0] =~ s/\A\s*// },
+
+);
 
 
 
@@ -219,6 +236,7 @@ __EOHTML__
   return $self->send_html(<<__EOHTML__);
 <html>
 <head>
+  <title>Source of $path</title>
   <link href="$lib/GvaScript.css" rel="stylesheet" type="text/css">
   <link href="$lib/PodPomWeb.css" rel="stylesheet" type="text/css">
   <style> 
@@ -253,8 +271,9 @@ sub serve_pod {
     : $self->parse_version($content);
   $version &&= " <small>$version</small>";
 
-  # Pod::POM fails to parse correctly when there is an initial blank line
-  $content =~ s/^\s*//; 
+  for my $filter (@podfilters) {
+    $filter->($content);
+  }
 
   # special handling for perlfunc: change initial C<..> to hyperlinks
   if ($path eq 'perlfunc') { 
@@ -265,7 +284,7 @@ sub serve_pod {
 
   my $parser = Pod::POM->new;
   my $pom = $parser->parse_text($content) or die $parser->error;
-  (my $mod_name = $path) =~ s[/][::];
+  (my $mod_name = $path) =~ s[/][::]g;
   my $view = Pod::POM::View::HTML::_PerlDoc->new(
     version         => $version,
     root_url        => $self->{root_url},
@@ -299,6 +318,11 @@ sub find_source {
 sub pod2pom {
   my ($self, $sourcefile) = @_;
   my $content = $self->slurp_file($sourcefile);
+
+  for my $filter (@podfilters) {
+    $filter->($content);
+  }
+
   my $parser = Pod::POM->new;
   my $pom = $parser->parse_text($content) or die $parser->error;
   return $pom;
@@ -710,8 +734,11 @@ sub send_html {
 
 sub send_content {
   my ($self, $args) = @_;
+  my $encoding  = guess_encoding($args->{content}, qw/ascii utf8 latin1/);
+  my $charset   = ref $encoding ? $encoding->name : "";
   my $length    = length $args->{content};
   my $mime_type = $args->{mime_type} || "text/html";
+     $mime_type .= "; charset=$charset" if $charset;
   my $modified  = gmtime $args->{mtime};
   my $code      = $args->{code} || 200;
 
@@ -892,6 +919,31 @@ sub view_seq_link {# override because SUPER does a nice job, but not fully
 }
 
 
+
+
+
+
+sub view_over {
+  my ($self, $over) = @_;
+  # This is a fix for AnnoCPAN POD which routinely has
+  #    =over \n =over \n ... \n =back \n =back
+  # Pod::POM::HTML omits =over blocks that lack =items.  The code below 
+  # detects the omission and adds it back, wrapped in an indented block.
+  my $content = $self->SUPER::view_over($over);
+  if ($content eq "") {
+    my $overs = $over->over();
+    if (@$overs) {
+      $content = join '', map {$self->view_over($_)} @$overs;
+      if ($content =~ /AnnoCPAN/) {
+        $content = "<div class='AnnoCPAN'>$content</div>";
+      }
+    }
+
+  }
+  return $content;
+}
+
+
 sub view_item {
   my ($self, $item) = @_;
 
@@ -938,6 +990,7 @@ sub view_pod {
   return <<__EOHTML__
 <html>
 <head>
+  <title>$name</title>
   <link href="$lib/GvaScript.css" rel="stylesheet" type="text/css">
   <link href="$lib/PodPomWeb.css" rel="stylesheet" type="text/css">
   <script src="$lib/prototype.js"></script>
@@ -1297,6 +1350,32 @@ build the index as described in L<Pod::POM::Web::Indexer> documentation.
 
 
 
+=head3 AnnoCPAN comments
+
+The website L<http://annocpan.org/> lets people add comments to the
+documentation of CPAN modules.  The AnnoCPAN database is freely
+downloadable and can be easily integrated with locally installed
+modules via runtime filtering.
+
+If you want AnnoCPAN comments to show up in Pod::POM::Web, do the following:
+
+=over
+
+=item *
+
+install L<AnnoCPAN::Perldoc> from CPAN;
+
+=item *
+
+download the database from L<http://annocpan.org/annopod.db> and save
+it as F<$HOME/.annocpan.db> (see the documentation in the above module
+for more details).  You may also like to try
+L<AnnoCPAN::Perldoc::SyncDB> which is a crontab-friendly tool for
+periodically downloading the AnnoCPAN database.
+
+=back
+
+
 =head1 ACKNOWLEDGEMENTS
 
 This web application was deeply inspired by :
@@ -1324,7 +1403,7 @@ the wide possibilities of Andy Wardley's L<Pod::POM> parser.
 =back
 
 Thanks to BooK who mentioned a weakness in the API 
-and to CDolan who supplied several useful suggestions and patches.
+and to Chris Dolan who supplied many useful suggestions and patches.
 
 
 =head1 RELEASE NOTES

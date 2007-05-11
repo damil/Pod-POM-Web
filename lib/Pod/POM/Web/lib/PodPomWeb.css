@@ -5,6 +5,7 @@ BODY, TD {
 
 H1, H2, H3, H4, H5, H6 {
   display:inline;
+  margin: 0px;
 }
 PRE {
   background: #eee;
@@ -17,6 +18,12 @@ CODE {
      padding: 1px; */
 }
 
+.AnnoCPAN { 
+  margin-left: 20%;
+  background: blanchedalmond;
+  border: 1px solid pink;
+  font-size: 85%;
+ }
 
 /* classes for syntax highlighting. */
 

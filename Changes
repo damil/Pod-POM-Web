@@ -1,5 +1,10 @@
 Revision history for Pod-POM-Web
 
+1.05    11.05.2007
+  - patch from CDOLAN to add <head><title>
+  - patch from CDOLAN to insert AnnoCPAN comments
+  - fixed CSS for Firefox H1 .. H6
+
 1.04    24.04.2007
   - patch from CDOLAN to show tooltips in module tree
   - hyperlinks from source code to use'd modules
