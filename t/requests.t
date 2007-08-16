@@ -26,7 +26,7 @@ response_like("/search?source=perlfaq&search=array",  qr/array/, "perlfaq");
 
 response_like("/source/HTTP/Request",  qr/HTTP::Request/, "source");
 
-my $regex = qr/HTTP::Request\s*<small>\s*$HTTP::Request::VERSION/;
+my $regex = qr[HTTP::Request</h1>\s*<small>\(v.\s*$HTTP::Request::VERSION];
 response_like("/HTTP/Request",  $regex, "serve_pod");
 
 

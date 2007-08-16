@@ -1,5 +1,17 @@
 Revision history for Pod-POM-Web
 
+1.07
+  - reorganised TOC : modules by initial letter
+  - also serve scripts
+  - display installation date [and CPAN latest version]
+  - bug fix: entity encoding when no syntax colouring package
+  - onComplete sends form.submit() in Search input box
+
+1.06    30.05.2007
+  - fixed Firefox CSS bug introduced in v1.05
+  - updated doc for modperl configuration
+  - friendly message in /index if javascript is disabled
+        
 1.05    11.05.2007
   - patch from CDOLAN to add <head><title>
   - patch from CDOLAN to insert AnnoCPAN comments

@@ -5,10 +5,10 @@ use Module::Build;
 my $builder = Module::Build->new(
     module_name         => 'Pod::POM::Web',
     license             => 'perl',
-    dist_author         => 'Laurent Dami <laurent.dami@justice.ge.ch>',
+    dist_author         => 'Laurent Dami <laurent.d...@justice.ge.ch>',
     dist_version_from   => 'lib/Pod/POM/Web.pm',
     requires => {
-      'Alien::GvaScript'     => 1.00,
+      'Alien::GvaScript'     => 1.09,
       'Pod::POM'             => 0.17,
       'Pod::POM::View::HTML' => 0,
       'List::Util'           => 0,
@@ -19,6 +19,8 @@ my $builder = Module::Build->new(
       'URI'                  => 0,
       'URI::QueryParam'      => 0,
       'Encode::Guess'        => 0,
+      'Config'               => 0,
+      'POSIX'                => 0,
       },
     recommends => {
       'Search::Indexer'           => 0.73,
