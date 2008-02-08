@@ -19,7 +19,7 @@ use Config;                     # where are the script directories
 # globals
 #----------------------------------------------------------------------
 
-our $VERSION = '1.07';
+our $VERSION = '1.09';
 
 # some subdirs never contain Pod documentation
 my @ignore_toc_dirs = qw/auto unicore/; 
@@ -465,16 +465,20 @@ sub toc_for { # partial toc (called through Ajax)
 sub toc_perldocs {
   my ($self) = @_;
 
-  # find perl* files under pod/ directory
-  my $perldocs = $self->find_entries_for("pod");
-  delete $perldocs->{$_}        for grep !/^perl/, keys %$perldocs;
-  $_->{node} =~ s[^[pP]od/][]   for values %$perldocs; # remove directory
+  my %perldocs;
 
-  # some perl* files are not under pod/ but at root level, don't know why
-  my $main_entries = $self->find_entries_for(""); 
-  $perldocs->{$_} = $main_entries->{$_} for grep /^perl/, keys %$main_entries;
+  # perl basic docs may be found under "pod", "pods", or the root dir
+  for my $subdir (qw/pod pods/, "") {
+    my $entries = $self->find_entries_for($subdir);
 
-  return $self->send_html($self->htmlize_perldocs($perldocs));
+    # just keep the perl* entries, without subdir prefix
+    foreach my $key (grep /^perl/, keys %$entries) {
+      $perldocs{$key} = $entries->{$key};
+      $perldocs{$key}{node} =~ s[^subdir/][]i;
+    }
+  }
+
+  return $self->send_html($self->htmlize_perldocs(\%perldocs));
 }
 
 
@@ -594,7 +598,7 @@ sub htmlize_perldocs {
 
   if (keys %$perldocs) {
     $html .= closed_node(label   => 'Unclassified', 
-                         content => htmlize_entries($perldocs));
+                         content => $self->htmlize_entries($perldocs));
   }
 
   return $html;
@@ -675,7 +679,7 @@ sub main_toc { #
     var no_indexer = $js_no_indexer;
 
     function submit_on_event(event) {
-        event.target.form.submit();
+        \$('search_form').submit();
     }
 
     function setup() {
@@ -733,7 +737,7 @@ Perl Documentation
 <a href="Pod/POM/Web/Help" class="small_title">Help</a>
 </div>
 
-<form action="search" method="get">
+<form action="search" id="search_form" method="get">
 <span class="small_title">Search in</span>
      <select name="source">
       <option>perlfunc</option>
@@ -1245,7 +1249,8 @@ sub view_pod {
 
    <span id="ref_box">
    <a href="$self->{root_url}/source/$self->{path}">Source</a><br>
-   CPAN 
+   <a href="http://search.cpan.org/perldoc/$self->{mod_name}"
+      target="_blank">CPAN</a> |
    <a href="http://www.annocpan.org/?mode=search&field=Module&name=$self->{mod_name}"
       target="_blank">Anno</a> |
    <a href="http://www.cpanforum.com/search/?what=modulee&name=$self->{mod_name}"
@@ -1615,9 +1620,11 @@ the wide possibilities of Andy Wardley's L<Pod::POM> parser.
 
 =back
 
-Thanks to BooK who mentioned a weakness in the API,
-to Chris Dolan who supplied many useful suggestions and patches,
-and to Rémi Pauchet who pointed out a regression bug with Firefox CSS.
+Thanks to BooK who mentioned a weakness in the API, to Chris Dolan who
+supplied many useful suggestions and patches (esp. integration with
+AnnoCPAN), to Rémi Pauchet who pointed out a regression bug with
+Firefox CSS, and to Alexandre Jousset who fixed a bug in the 
+TOC display.
 
 
 =head1 RELEASE NOTES
@@ -1657,15 +1664,12 @@ under the same terms as Perl itself.
 
   - real tests !
   - checks and fallback solution for systems without perlfunc and perlfaq
-  - bug on Unclassified - empty content
   - GvaScript bug first click => scroll, 2nd click => serve
   - factorization (esp. initial <head> in html pages)
   - use Getopts to choose colouring package, toggle CPAN, etc.
-  - display bug in perlre (<a...)
-  - bug on =head1 NAME B<..> in Data::ShowTable
   - declare bugs 
       - SQL::Abstract, nonempty line #337
       - LWP: item without '*'
       - CPAN : C<CPAN::WAIT> in L<..> 
-
-
+      - perlre : line 940, code <I ...> parsed as I<...>
+      - =head1 NAME B<..> in Data::ShowTable

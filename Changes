@@ -1,5 +1,14 @@
 Revision history for Pod-POM-Web
 
+1.09
+  - Hyperlink to search.cpan.org/perldoc
+  - look for perl* files in both "pod" and "pods" subdirs
+
+1.08
+  - fixed bug with onComplete introduced in 1.07
+  - fixed bug: no entries in section "Unclassified" (patch from A. Jousset)
+  - adaptation for Search::Indexer v0.75 (bugfix on incremental reindexing)
+
 1.07
   - reorganised TOC : modules by initial letter
   - also serve scripts

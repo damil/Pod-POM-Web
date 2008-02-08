@@ -8,7 +8,7 @@ use Pod::POM;
 use List::Util      qw/min max/;
 use List::MoreUtils qw/part/;
 use Time::HiRes     qw/time/;
-use Search::Indexer 0.73;
+use Search::Indexer 0.75;
 use BerkeleyDB;
 
 use base 'Pod::POM::Web';
@@ -351,9 +351,8 @@ sub index_file {
   }
 
   if (@filenames) {
-    my $doc_id = $self->{_previous_index}{$fullpath}{id};
-    if ($doc_id) { $self->{_indexer}->remove($doc_id); }
-    else         { $doc_id = ++$self->{_max_doc_id};   }
+    my $old_doc_id = $self->{_previous_index}{$fullpath}{id};
+    my $doc_id     = $old_doc_id || ++$self->{_max_doc_id};
 
     print STDERR "INDEXING $fullpath (id $doc_id) ... ";
 
@@ -365,6 +364,16 @@ sub index_file {
     $buf =~ s/^=head1\s+($ignore_headings).*$//m; # remove full line of those
     $buf =~ s/^=(head\d|item)//mg; # just remove command of =head* or =item
     $buf =~ s/^=\w.*//mg;          # remove full line of all other commands 
+
+    if ($old_doc_id) {
+      # Here we should remove the old document from the index. But
+      # we no longer have the document source! So we cheat with the current
+      # doc buffer, hoping that most words are similar. This step sounds
+      # ridiculous but is necessary to avoid having twice the same
+      # doc listed twice in inverted lists.
+      $self->{_indexer}->remove($old_doc_id, $buf);
+    }
+
     $self->{_indexer}->add($doc_id, $buf);
     my $interval = time - $t0;
     printf STDERR "%0.3f s.", $interval;

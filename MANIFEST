@@ -1,6 +1,5 @@
 Build.PL
 Changes
-foo.pl
 lib/Pod/POM/Web.pm
 lib/Pod/POM/Web/Help.pod
 lib/Pod/POM/Web/Indexer.pm
@@ -12,3 +11,4 @@ README
 t/indexer.t
 t/pod.t
 t/requests.t
+t/TODO.txt

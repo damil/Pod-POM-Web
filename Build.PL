@@ -23,7 +23,7 @@ my $builder = Module::Build->new(
       'POSIX'                => 0,
       },
     recommends => {
-      'Search::Indexer'           => 0.73,
+      'Search::Indexer'           => 0.75,
       'PPI::HTML'                 => 0,
       'AnnoCPAN::Perldoc::Filter' => 0,
     },
