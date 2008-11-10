@@ -1,5 +1,15 @@
 Revision history for Pod-POM-Web
 
+1.10 07.11.2008
+  - passthrough for non-POD files (i.e. images, css, etc.)
+  - clicking hrefs in the TOC really loads the pages
+  - recompute height of treeNavigator
+  - alphabetical sort of Perl docs in each section
+  - sync displayed pages / TOC
+  - tooltips for Perl docs
+  - fixed hyperlinks in perlfunc
+  - initial page is 'perl' instead of 'perlintro', with hyperlinks
+
 1.09
   - Hyperlink to search.cpan.org/perldoc
   - look for perl* files in both "pod" and "pods" subdirs

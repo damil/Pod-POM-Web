@@ -19,7 +19,7 @@ response_like("/index", qr/frameset/, "index");
 response_like("/toc", qr/Modules/, "toc");
 response_like("/toc/HTTP", qr/Request.*?Response/, "toc/HTTP");
 
-response_like("/lib/GvaScript.css", qr/AC_dropdown/, "lib");
+response_like("/Alien/GvaScript/lib/GvaScript.css", qr/AC_dropdown/, "lib");
 
 response_like("/search?source=perlfunc&search=shift", qr/array/, "perlfunc");
 response_like("/search?source=perlfaq&search=array",  qr/array/, "perlfaq");

@@ -1,16 +1,32 @@
-package Pod::POM::Web;
+=begin BUGS
+
+  MSIE : click on TOC entry jumps and then jumps back to TOC (timeout handler)
+  Firefox: kb navigation does not scroll properly
+
+=cut
+
+
+
+
+
+
+
+#======================================================================
+package Pod::POM::Web; # see doc at end of file
+#======================================================================
 use strict;
 use warnings;
 no warnings 'uninitialized';
 
 use Pod::POM 0.17;              # parsing Pod
 use List::Util      qw/max/;    # maximum
-use List::MoreUtils qw/uniq/;   # just keep distinct values from a list
+use List::MoreUtils qw/uniq firstval/;
 use Module::CoreList;           # asking if a module belongs to Perl core
 use HTTP::Daemon;               # for the builtin HTTP server
 use URI;                        # parsing incoming requests
 use URI::QueryParam;
-use Alien::GvaScript 1.09;      # javascript files
+use MIME::Types;                # translate file extension into MIME type
+use Alien::GvaScript 1.10;      # javascript files
 use Encode::Guess;              # guessing if pod source is utf8 or latin1
 use Config;                     # where are the script directories
 
@@ -19,7 +35,7 @@ use Config;                     # where are the script directories
 # globals
 #----------------------------------------------------------------------
 
-our $VERSION = '1.09';
+our $VERSION = '1.10';
 
 # some subdirs never contain Pod documentation
 my @ignore_toc_dirs = qw/auto unicore/; 
@@ -34,8 +50,9 @@ my @config_script_dirs = qw/sitescriptexp vendorscriptexp scriptdirexp/;
 my @script_dirs        = grep {$_} @Config{@config_script_dirs};
 
 # syntax coloring (optional)
-my $coloring_package = eval {require ActiveState::Scineplex} ? "SCINEPLEX"
-                     : eval {require PPI::HTML}              ? "PPI"      : "";
+my $coloring_package 
+  = eval {require PPI::HTML}              ? "PPI"
+  : eval {require ActiveState::Scineplex} ? "SCINEPLEX" : "";
 
 # fulltext indexing (optional)
 my $no_indexer = eval {require Pod::POM::Web::Indexer} ? 0 : $@;
@@ -172,12 +189,14 @@ sub dispatch_request {
     /^toc$/            and return $self->main_toc; 
     /^toc\/(.*)$/      and return $self->toc_for($1);   # Ajax calls
     /^script\/(.*)$/   and return $self->serve_script($1);
-    /^lib\/(.*)$/      and return $self->lib_file($1);  # css, js, gif
     /^search$/         and return $self->dispatch_search;
     /^source\/(.*)$/   and return $self->serve_source($1);
 
     # for debugging
     /^_dirs$/          and return $self->send_html(join "<br>", @search_dirs);
+
+    # file extension : passthrough 
+    /\.(\w+)$/         and return $self->serve_file($path_info, $1);
 
     #otherwise
     return $self->serve_pod($path_info);
@@ -213,8 +232,8 @@ sub index_frameset {
 <html>
   <head><title>Perl documentation</title></head>
   <frameset cols="25%, 75%">
-    <frame name="tocFrame"     src="toc"></frame>
-    <frame name="contentFrame" src="perlintro"></frame>
+    <frame name="tocFrame"     src="toc" ></frame>
+    <frame name="contentFrame" src="perl" ></frame>
   </frameset>
 </html>
 __EOHTML__
@@ -242,12 +261,11 @@ sub serve_source {
 
   foreach my $file (@files) {
     my $text = $self->slurp_file($file);
-    my $view = Pod::POM::View::HTML::_PerlDoc->new(
-     root_url        => $self->{root_url},
-     syntax_coloring => $params->{coloring} ? $coloring_package : "",
-     line_numbering  => $params->{lines},
-    );
-    $text = $view->view_verbatim($text);
+    my $view = $self->mk_view(
+      line_numbering  => $params->{lines},
+      syntax_coloring => ($params->{coloring} ? $coloring_package : "")
+     );
+    $text    = $view->view_verbatim($text);
     $display_text .= "<p/><h2>$file</h2><p/><pre>$text</pre>";
   }
 
@@ -270,13 +288,12 @@ __EOHTML__
 <a href="$self->{root_url}/$path" style="float:right">Doc</a>
 __EOHTML__
 
-  my $lib = "$self->{root_url}/lib";
   return $self->send_html(<<__EOHTML__, $mtime);
 <html>
 <head>
   <title>Source of $path</title>
-  <link href="$lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="$lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+  <link href="$self->{root_url}/Alien/GvaScript/lib/GvaScript.css" rel="stylesheet" type="text/css">
+  <link href="$self->{root_url}/Pod/Pom/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
   <style> 
     PRE {border: none; background: none}
     FORM {float: right; font-size: 70%; border: 1px solid}
@@ -294,6 +311,20 @@ $display_text
 __EOHTML__
 }
 
+
+sub serve_file {
+  my ($self, $path, $extension) = @_;
+
+  my $fullpath = firstval {-f $_} map {"$_/$path"} @search_dirs
+    or die "could not find $path";
+
+  my $mime_type = MIME::Types->new->mimeTypeOf($extension);
+  my $content = $self->slurp_file($fullpath);
+  my $mtime   = (stat $fullpath)[9];
+  $self->send_content({content   => $content, 
+                       mtime     => $mtime, 
+                       mime_type => $mime_type});
+}
 
 
 sub serve_pod {
@@ -315,29 +346,36 @@ sub serve_pod {
   }
 
   # special handling for perlfunc: change initial C<..> to hyperlinks
-  if ($path eq 'perlfunc') { 
-    sub C_to_L {my $txt = shift; $txt =~ s[C<(.*?)>][C<L</$1>>]g; $txt}
+  if ($path =~ /\bperlfunc$/) { 
+    my $sub = sub {my $txt = shift; $txt =~ s[C<(.*?)>][C<L</$1>>]g; $txt};
     $content =~ s[(Perl Functions by Category)(.*?)(Alphabetical Listing)]
-                 [$1 . C_to_L($2) . $3]es;
+                 [$1 . $sub->($2) . $3]es;
   }
-
 
   my $parser = Pod::POM->new;
   my $pom = $parser->parse_text($content) or die $parser->error;
   (my $mod_name = $path) =~ s[/][::]g;
-  my $view = Pod::POM::View::HTML::_PerlDoc->new(
-    version         => $version,
-    mtime           => $mtime,
-    root_url        => $self->{root_url},
-    path            => $path,
-    mod_name        => $mod_name,
-    syntax_coloring => $coloring_package,
-   );
+  my $view = $self->mk_view(version         => $version,
+                            mtime           => $mtime,
+                            path            => $path,
+                            mod_name        => $mod_name,
+                            syntax_coloring => $coloring_package);
 
   my $html = $view->print($pom);
 
   # again special handling for perlfunc : ids should be just function names
-  $html =~ s/li id="(.*?)_.*?"/li id="$1"/g if $path eq 'perlfunc';
+  if ($path =~ /\bperlfunc$/) { 
+    $html =~ s/li id="(.*?)_.*?"/li id="$1"/g;
+  }
+
+  # special handling for 'perl' : hyperlinks to man pages
+  if ($path =~ /\bperl$/) { 
+    my $sub = sub {my $txt = shift;
+                   $txt =~ s[(perl\w+)]
+                            [<a href="$self->{root_url}/$1">$1</a>]g;
+                   return $txt};
+    $html =~ s[(<pre.*?</pre>)][$sub->($1)]egs;
+  }
 
   return $self->send_html($html, $mtime);
 }
@@ -377,15 +415,11 @@ sub serve_script {
   }
 
   my $parser = Pod::POM->new;
-  my $pom = $parser->parse_text($content) or die $parser->error;
-  my $view = Pod::POM::View::HTML::_PerlDoc->new(
-    root_url        => $self->{root_url},
-    path            => "scripts/$path",
-    mtime           => $mtime,
-    syntax_coloring => $coloring_package,
-   );
-
-  my $html = $view->print($pom);
+  my $pom    = $parser->parse_text($content) or die $parser->error;
+  my $view   = $self->mk_view(path            => "scripts/$path",
+                              mtime           => $mtime,
+                              syntax_coloring => $coloring_package);
+  my $html   = $view->print($pom);
 
   return $self->send_html($html, $mtime);
 }
@@ -407,7 +441,7 @@ sub find_source {
         return "$dir/$path$ext";
       }
     }
-    return undef;
+    return;
   }
 
   # otherwise, serving a module
@@ -418,7 +452,7 @@ sub find_source {
                             "$prefix/pods/$path.pod");
     return @found if @found;
   }
-  return undef;
+  return;
 }
 
 
@@ -579,23 +613,32 @@ sub htmlize_perldocs {
   my ($synopsis) = grep {$_->title eq 'SYNOPSIS'} $perlpom->head1();
 
   my $html = "";
+
+  # classified pages mentioned in the synopsis
   foreach my $h2 ($synopsis->head2) {
     my $title   = $h2->title;
     my $content = $h2->verbatim;
-    my @refs    = ($content =~ /^\s*(perl\S*?)\s*\t/gm);
 
     # "Internals and C-Language Interface" is too long
     $title =~ s/^Internals.*/Internals/;
 
-    my $leaves = "";
-    foreach my $ref (@refs) {
+    # gather leaf entries
+    my @leaves;
+    while ($content =~ /^\s*(perl\S*?)\s*\t(.+)/gm) {
+      my ($ref, $descr) = ($1, $2);
       my $entry = delete $perldocs->{$ref} or next;
-      $leaves .= leaf(label => $ref, href  => $entry->{node});
+      push @leaves, {label => $ref, 
+                     href  => $entry->{node},
+                     attrs => qq{id='$ref' title='$descr'}};
     }
+    # sort and transform into HTML
+    @leaves = map {leaf(%$_)} 
+              sort {$a->{label} cmp $b->{label}} @leaves;
     $html .= closed_node(label   => $title, 
-                         content => $leaves);
+                         content => join("\n", @leaves));
   }
 
+  # maybe some remaining pages
   if (keys %$perldocs) {
     $html .= closed_node(label   => 'Unclassified', 
                          content => $self->htmlize_entries($perldocs));
@@ -613,7 +656,8 @@ sub htmlize_entries {
   foreach my $name (sort {uc($a) cmp uc($b)} keys %$entries) {
     my $entry = $entries->{$name};
     my %args = (class => 'TN_leaf',
-                label => $name);
+                label => $name, 
+                attrs => '');
     if ($entry->{dir}) {
       $args{class} = 'TN_node TN_closed';
       $args{attrs} = qq{TN:contentURL='toc/$entry->{node}'};
@@ -621,6 +665,8 @@ sub htmlize_entries {
     if ($entry->{pod}) {
       $args{href}     = $entry->{node};
       $args{abstract} = $self->get_abstract($entry->{node});
+      (my $id = $entry->{node}) =~ s[/][::]g;
+      $args{attrs}   .= qq{id='$id'};
     }
     $html .= generic_node(%args);
   }
@@ -633,8 +679,15 @@ sub get_abstract {
 
 
 
-sub main_toc { # 
+
+sub main_toc { 
   my ($self) = @_;
+
+  # perlfunc entries in JSON format for the DHTML autocompleter
+  my @funcs = map {$_->title} grep {$_->content =~ /\S/} $self->perlfunc_items;
+  s|[/\s(].*||s foreach @funcs;
+  my $json_funcs = "[" . join(",", map {qq{"$_"}} uniq @funcs) . "]";
+  my $js_no_indexer = $no_indexer ? 'true' : 'false';
 
   my $perldocs = closed_node(label       => "Perl docs",
                              label_class => "TN_label small_title",
@@ -650,7 +703,7 @@ sub main_toc { #
     $alpha_list .= closed_node (
       label       => $letter,
       label_class => "TN_label",
-      attrs       =>  qq{TN:contentURL='toc/$letter*'},
+      attrs       =>  qq{TN:contentURL='toc/$letter*' id='${letter}:'},
      );
   }
   my $modules = generic_node (label       => "Modules",
@@ -658,23 +711,19 @@ sub main_toc { #
                               content     => $alpha_list);
 
 
-  # perlfunc entries in JSON format for the DHTML autocompleter
-  my @funcs = map {$_->title} grep {$_->content =~ /\S/} $self->perlfunc_items;
-  s|[/\s(].*||s foreach @funcs;
-  my $json_funcs = "[" . join(",", map {qq{"$_"}} uniq @funcs) . "]";
-  my $js_no_indexer = $no_indexer ? 'true' : 'false';
-
   return $self->send_html(<<__EOHTML__);
 <html>
 <head>
   <base target="contentFrame">
-  <link href="lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="lib/PodPomWeb.css" rel="stylesheet" type="text/css">
-  <script src="lib/prototype.js"></script>
-  <script src="lib/GvaScript.js"></script>
+  <link href="$self->{root_url}/Alien/GvaScript/lib/GvaScript.css" 
+        rel="stylesheet" type="text/css">
+  <link href="$self->{root_url}/Pod/Pom/Web/lib/PodPomWeb.css" 
+        rel="stylesheet" type="text/css">
+  <script src="$self->{root_url}/Alien/GvaScript/lib/prototype.js"></script>
+  <script src="$self->{root_url}/Alien/GvaScript/lib/GvaScript.js"></script>
   <script>
-    var perlfuncs = $json_funcs;
     var treeNavigator;
+    var perlfuncs = $json_funcs;
     var completers = {};
     var no_indexer = $js_no_indexer;
 
@@ -682,9 +731,17 @@ sub main_toc { #
         \$('search_form').submit();
     }
 
+    function resize_tree_navigator() {
+      var height = document.body.clientHeight
+                 - \$('toc_frame_top').scrollHeight -5;
+      \$('TN_tree').style.height = height + "px";
+    }
+
     function setup() {
+
       treeNavigator 
-        = new GvaScript.TreeNavigator('TN_tree', {tabIndex:0});
+        = new GvaScript.TreeNavigator('TN_tree', {tabIndex:-1});
+
       completers.perlfunc = new GvaScript.AutoCompleter(
              perlfuncs, 
              {minimumChars: 1, minWidth: 100, offsetX: -20});
@@ -695,8 +752,30 @@ sub main_toc { #
              {minimumChars: 2, minWidth: 100, offsetX: -20, typeAhead: false});
         completers.modlist.onComplete = submit_on_event;
       }
+
+      resize_tree_navigator();
+      \$('search_form').search.focus();
     }
     window.onload = setup;
+    window.onresize = resize_tree_navigator;
+
+    function displayContent(event) {
+        var label = event.controller.label(event.target);
+        if (label && label.tagName == "A") {
+          label.focus();
+          return Event.stopNone;
+        }
+    }
+
+    function selectToc(entry) {
+      var node = \$(entry);
+      if (!node) {
+        var initial = entry.substr(0, 1);
+        if (initial <= 'Z') 
+           node = \$(initial + ":");
+      }
+      if (node && treeNavigator) treeNavigator.select(node);
+    }
 
    function maybe_complete(input) {
      if (input._autocompleter)
@@ -710,30 +789,25 @@ sub main_toc { #
      }
    }
 
-    function displayContent(event) {
-        var label = event.controller.label(event.target);
-        if (label && label.tagName == "A") {
-          label.focus();
-          return Event.stopNone;
-        }
-    }
+
   </script>
   <style>
    .small_title {color: midnightblue; font-weight: bold; padding: 0 3 0 3}
    FORM     {margin:0px}
+   BODY     {margin:0px; font-size: 70%}
    BODY     {margin:0px; font-size: 70%; overflow-x: hidden} 
-   #TN_tree {height: 80%; 
-             overflow-y:scroll; 
-             overflow-x: hidden}
+   DIV      {margin:0px; width: 100%}
+   #TN_tree {overflow-y:scroll; overflow-x: hidden}
   </style>
 </head>
 <body>
 
+<div id='toc_frame_top'>
 <div class="small_title" 
-     style="width:100%; text-align:center;border-bottom: 1px solid">
+     style="text-align:center;border-bottom: 1px solid">
 Perl Documentation
 </div>
-<div style="width:100%; text-align:right">
+<div style="text-align:right">
 <a href="Pod/POM/Web/Help" class="small_title">Help</a>
 </div>
 
@@ -752,9 +826,13 @@ Perl Documentation
 </form>
 <br>
 <div class="small_title"
-     style="width:100%; border-bottom: 1px solid">Browse
+     style="border-bottom: 1px solid">Browse
+</div>
 </div>
 
+<!-- In principle the tree navigator below would best belong in a 
+     different frame, but instead it's in a div because the autocompleter
+     from the form above sometines needs to overlap the tree nav. -->
 <div id='TN_tree' onPing='displayContent'>
 $perldocs
 $pragmas
@@ -815,17 +893,13 @@ sub perlfunc {
   my ($self, $func) = @_;
   my @items = grep {$_->title =~ /^$func\b/} $self->perlfunc_items
      or return print("No documentation found for perl function '$func'");
-  my $view    = Pod::POM::View::HTML::_PerlDoc->new(
-    root_url => $self->{root_url},
-    path     => "perlfunc/$func",
-   );
+  my $view    = $self->mk_view(path => "perlfunc/$func");
 
   my @li_items = map {$_->present($view)} @items;
-  my $lib = "$self->{root_url}/lib";
   return $self->send_html(<<__EOHTML__);
 <html>
 <head>
-  <link href="$lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+  <link href="$self->{root_url}/Pod/Pom/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
 </head>
 <body>
 <h2>Extract from <a href="$self->{root_url}/perlfunc">perlfunc</a></h2>
@@ -843,10 +917,7 @@ sub perlfaq {
   my $answers   = "";
   my $n_answers = 0;
 
-  my $view    = Pod::POM::View::HTML::_PerlDoc->new(
-    root_url => $self->{root_url},
-    path     => "perlfaq/$faq_entry",
-   );
+  my $view = $self->mk_view(path => "perlfaq/$faq_entry");
 
  FAQ: 
   for my $num (1..9) {
@@ -860,14 +931,13 @@ sub perlfaq {
     $n_answers += @nodes;
   }
 
-  my $lib = "$self->{root_url}/lib";
   return $self->send_html(<<__EOHTML__);
 <html>
 <head>
-  <link href="$lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="$lib/PodPomWeb.css" rel="stylesheet" type="text/css">
-  <script src="$lib/prototype.js"></script>
-  <script src="$lib/GvaScript.js"></script>
+  <link href="$self->{root_url}/Alien/GvaScript/lib/GvaScript.css" rel="stylesheet" type="text/css">
+  <link href="$self->{root_url}/Pod/Pom/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+  <script src="$self->{root_url}/Alien/GvaScript/lib/prototype.js"></script>
+  <script src="$self->{root_url}/Alien/GvaScript/lib/GvaScript.js"></script>
   <script>
     var treeNavigator;
     function setup() {  
@@ -892,25 +962,18 @@ __EOHTML__
 # miscellaneous
 #----------------------------------------------------------------------
 
-sub lib_file {
-  my ($self, $filename) = @_;
-  my $dir = Alien::GvaScript->path;  # most lib files are in GvaScript
-  if ($filename eq 'PodPomWeb.css') { # except PodPomWeb.css
-      ($dir = __FILE__) =~ s[\.pm$][/lib];
-  }
 
-  (my $extension = $filename) =~ s/.*\.//;
-  my $mime_type = {html => 'text/html',
-                   css  => 'text/css', 
-                   js   => 'application/x-javascript',
-                   gif  => 'image/gif'}->{$extension}
-                     or die "lib_file($filename): unexpected extension";
-  my $content = $self->slurp_file("$dir/$filename");
-  my $mtime   = (stat "$dir/$filename")[9];
-  $self->send_content({content   => $content, 
-                       mtime     => $mtime, 
-                       mime_type => $mime_type});
+sub mk_view {
+  my ($self, %args) = @_;
+
+  my $view = Pod::POM::View::HTML::_PerlDoc->new(
+    root_url        => $self->{root_url},
+    %args
+   );
+
+  return $view;
 }
+
 
 
 sub send_html {
@@ -1073,20 +1136,18 @@ sub parse_version {
 
 1;
 #======================================================================
+# END OF package Pod::POM::Web
+#======================================================================
 
 
-
-
-#----------------------------------------------------------------------
-# VIEW PACKAGE for Pod::POM::View::HTML
-#----------------------------------------------------------------------
-package Pod::POM::View::HTML::_PerlDoc;
+#======================================================================
+package Pod::POM::View::HTML::_PerlDoc; # View package
+#======================================================================
 use strict;
 use warnings;
 no warnings 'uninitialized';
 use base qw/ Pod::POM::View::HTML /;
 use POSIX  qw/strftime/; # date formatting
-
 
 
 sub view_seq_link_transform_path {
@@ -1105,10 +1166,6 @@ sub view_seq_link {# override because SUPER does a nice job, but not fully
       unless ($title =~ m{^\w+://}s); # full-blown URL
     return qq{<a href="$url">$title</a>}; #  [$u] [$t] [$1] [$2]
 }
-
-
-
-
 
 
 sub view_over {
@@ -1189,28 +1246,31 @@ sub view_pod {
   # compute view
   my $content = $pom->content->present($self);
   my $toc = $self->make_toc($pom, 0); 
-  my $lib = "$self->{root_url}/lib";
   return <<__EOHTML__
 <html>
 <head>
   <title>$name</title>
-  <link href="$lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="$lib/PodPomWeb.css" rel="stylesheet" type="text/css">
-  <script src="$lib/prototype.js"></script>
-  <script src="$lib/GvaScript.js"></script>
+  <link href="$self->{root_url}/Alien/GvaScript/lib/GvaScript.css" rel="stylesheet" type="text/css">
+  <link href="$self->{root_url}/Pod/Pom/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+  <script src="$self->{root_url}/Alien/GvaScript/lib/prototype.js"></script>
+  <script src="$self->{root_url}/Alien/GvaScript/lib/GvaScript.js"></script>
   <script>
     var treeNavigator;
     function setup() {  
       new GvaScript.TreeNavigator(
          'TN_tree', 
-         {selectFirstNode: location.hash ? false : true}
+         {selectFirstNode: (location.hash ? false : true),
+          tabIndex: 0}
       );
+
+     var tocFrame = window.parent.frames.tocFrame;
+     if (tocFrame) tocFrame.eval("selectToc('$name')");
     }
     window.onload = setup;
     function jumpto_href(event) {
       var label = event.controller.label(event.target);
       if (label && label.tagName == "A") {
-        label.focus();
+        /* label.focus(); */
         return Event.stopNone;
       }
     }
@@ -1238,7 +1298,6 @@ sub view_pod {
   </style>
 </head>
 <body>
-
 <div id='TN_tree'>
   <div class="TN_node">
    <h1 class="TN_label">$name</h1>
@@ -1319,7 +1378,7 @@ sub view_verbatim {
   }
 
   # hyperlinks to other modules
-  $text =~ s{(\buse\b(?:</span>)?\s+(?:<span.*?>)?)([\w:]+)}
+  $text =~ s{(\buse\b(?:</span>)?\ +(?:<span.*?>)?)([\w:]+)}
             {my $url = $self->view_seq_link_transform_path($2);
              qq{$1<a href="$url">$2</a>} }eg;
 
@@ -1520,17 +1579,10 @@ the builtin HTTP server :
 This is useful if you have no other HTTP server, or if
 you want to run this module under the perl debugger.
 
-=head2 Note about static files
-
-The application needs some static DHTML resources (style sheets,
-javascript code, images). These are served dynamically by 
-the module, under the L<lib> URL; but of course is it more
-efficient to tell Apache to serve these files directly, by putting
-an alias to the F<perl/site/lib/Pod/POM/Web/lib> directory.
 
 =head2 Note about security
 
-This application is intented as a power tool for Perl developers, 
+This application is intended as a power tool for Perl developers, 
 not as an Internet application. It will display the documentation and source
 code of any module installed under your C<@INC> path or
 Apache C<lib/perl> directory, so it is probably a B<bad idea>
@@ -1591,6 +1643,28 @@ L<AnnoCPAN::Perldoc::SyncDB> which is a crontab-friendly tool for
 periodically downloading the AnnoCPAN database.
 
 =back
+
+
+=head1 AUTHORING
+
+=head2 Images
+
+The Pod::Pom::Web server also serves non-pod files within the C<@INC> 
+hierarchy. This is useful for example to include images in your 
+documentation, by inserting chunks of HTML as follows : 
+
+  =for html
+    <img src="pretty_diagram.jpg">
+
+or 
+
+  =for html
+    <object type="image/svg+xml" data="try.svg" width="640" height="480">
+    </object>
+
+Here it is assumed that auxiliary files C<pretty_diagram.jpg> or 
+C<try.svg> are in the same directory than the POD source; but 
+of course relative or absolute links can be used.
 
 
 =head1 ACKNOWLEDGEMENTS
@@ -1662,9 +1736,9 @@ under the same terms as Perl itself.
 
 =head1 TODO
 
-  - real tests !
+  - XUL error message for CSS
+   - real tests !
   - checks and fallback solution for systems without perlfunc and perlfaq
-  - GvaScript bug first click => scroll, 2nd click => serve
   - factorization (esp. initial <head> in html pages)
   - use Getopts to choose colouring package, toggle CPAN, etc.
   - declare bugs 
