@@ -1,16 +1,3 @@
-=begin BUGS
-
-  MSIE : click on TOC entry jumps and then jumps back to TOC (timeout handler)
-  Firefox: kb navigation does not scroll properly
-
-=cut
-
-
-
-
-
-
-
 #======================================================================
 package Pod::POM::Web; # see doc at end of file
 #======================================================================
@@ -35,7 +22,7 @@ use Config;                     # where are the script directories
 # globals
 #----------------------------------------------------------------------
 
-our $VERSION = '1.10';
+our $VERSION = '1.11';
 
 # some subdirs never contain Pod documentation
 my @ignore_toc_dirs = qw/auto unicore/; 
@@ -260,7 +247,7 @@ sub serve_source {
   my $display_text;
 
   foreach my $file (@files) {
-    my $text = $self->slurp_file($file);
+    my $text = $self->slurp_file($file, ":crlf");
     my $view = $self->mk_view(
       line_numbering  => $params->{lines},
       syntax_coloring => ($params->{coloring} ? $coloring_package : "")
@@ -293,7 +280,7 @@ __EOHTML__
 <head>
   <title>Source of $path</title>
   <link href="$self->{root_url}/Alien/GvaScript/lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="$self->{root_url}/Pod/Pom/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+  <link href="$self->{root_url}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
   <style> 
     PRE {border: none; background: none}
     FORM {float: right; font-size: 70%; border: 1px solid}
@@ -319,7 +306,7 @@ sub serve_file {
     or die "could not find $path";
 
   my $mime_type = MIME::Types->new->mimeTypeOf($extension);
-  my $content = $self->slurp_file($fullpath);
+  my $content = $self->slurp_file($fullpath, ":raw");
   my $mtime   = (stat $fullpath)[9];
   $self->send_content({content   => $content, 
                        mtime     => $mtime, 
@@ -335,10 +322,10 @@ sub serve_pod {
   my @sources = $self->find_source($path) or die "No file for '$path'";
   my $mtime   = max map {(stat $_)[9]} @sources;
   my $content = $path eq 'perltoc' ? $self->fake_perltoc 
-                                   : $self->slurp_file($sources[0]);
+                                   : $self->slurp_file($sources[0], ":crlf");
 
   my $version = @sources > 1 
-    ? $self->parse_version($self->slurp_file($sources[-1])) 
+    ? $self->parse_version($self->slurp_file($sources[-1], ":crlf")) 
     : $self->parse_version($content);
 
   for my $filter (@podfilters) {
@@ -407,7 +394,7 @@ sub serve_script {
 
   $fullpath or die "no such script : $path";
 
-  my $content = $self->slurp_file($fullpath);
+  my $content = $self->slurp_file($fullpath, ":crlf");
   my $mtime   = (stat $fullpath)[9];
 
   for my $filter (@podfilters) {
@@ -461,7 +448,7 @@ sub find_source {
 
 sub pod2pom {
   my ($self, $sourcefile) = @_;
-  my $content = $self->slurp_file($sourcefile);
+  my $content = $self->slurp_file($sourcefile, ":crlf");
 
   for my $filter (@podfilters) {
     $filter->($content);
@@ -607,7 +594,7 @@ sub htmlize_perldocs {
   my $parser  = Pod::POM->new;
 
   # Pod/perl.pom Synopsis contains a classification of perl*.pod documents
-  my $source  = $self->slurp_file($self->find_source("perl"));
+  my $source  = $self->slurp_file($self->find_source("perl", ":crlf"));
   my $perlpom = $parser->parse_text($source) or die $parser->error;
 
   my ($synopsis) = grep {$_->title eq 'SYNOPSIS'} $perlpom->head1();
@@ -717,7 +704,7 @@ sub main_toc {
   <base target="contentFrame">
   <link href="$self->{root_url}/Alien/GvaScript/lib/GvaScript.css" 
         rel="stylesheet" type="text/css">
-  <link href="$self->{root_url}/Pod/Pom/Web/lib/PodPomWeb.css" 
+  <link href="$self->{root_url}/Pod/POM/Web/lib/PodPomWeb.css" 
         rel="stylesheet" type="text/css">
   <script src="$self->{root_url}/Alien/GvaScript/lib/prototype.js"></script>
   <script src="$self->{root_url}/Alien/GvaScript/lib/GvaScript.js"></script>
@@ -899,7 +886,7 @@ sub perlfunc {
   return $self->send_html(<<__EOHTML__);
 <html>
 <head>
-  <link href="$self->{root_url}/Pod/Pom/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+  <link href="$self->{root_url}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
 </head>
 <body>
 <h2>Extract from <a href="$self->{root_url}/perlfunc">perlfunc</a></h2>
@@ -935,7 +922,7 @@ sub perlfaq {
 <html>
 <head>
   <link href="$self->{root_url}/Alien/GvaScript/lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="$self->{root_url}/Pod/Pom/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+  <link href="$self->{root_url}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
   <script src="$self->{root_url}/Alien/GvaScript/lib/prototype.js"></script>
   <script src="$self->{root_url}/Alien/GvaScript/lib/GvaScript.js"></script>
   <script>
@@ -1070,9 +1057,9 @@ sub leaf {
 
 
 sub slurp_file {
-  my ($self, $file) = @_;
+  my ($self, $file, $io_layer) = @_;
   open my $fh, $file or die "open $file: $!";
-  binmode($fh, ":crlf");
+  binmode($fh, $io_layer) if $io_layer;
   local $/ = undef;
   return <$fh>;
 }
@@ -1222,6 +1209,7 @@ sub view_pod {
   $doc_title =~ s/<.*?>//g; # no HTML tags
   my ($name, $description) = ($doc_title =~ /^\s*(.*?)\s+-+\s+(.*)/);
   $name ||= $doc_title;
+  $name =~ s/\n.*//s;
 
   # version and installation date
   my $version   = $self->{version} ? "v. $self->{version}, " : ""; 
@@ -1251,7 +1239,7 @@ sub view_pod {
 <head>
   <title>$name</title>
   <link href="$self->{root_url}/Alien/GvaScript/lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="$self->{root_url}/Pod/Pom/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+  <link href="$self->{root_url}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
   <script src="$self->{root_url}/Alien/GvaScript/lib/prototype.js"></script>
   <script src="$self->{root_url}/Alien/GvaScript/lib/GvaScript.js"></script>
   <script>

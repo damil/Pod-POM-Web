@@ -1,5 +1,11 @@
 Revision history for Pod-POM-Web
 
+1.11 13.11.2008
+  - removed =begin BUGS section in Pod that was preventing proper display
+  - fixed perlio layer for pass-through binary files
+  - ref to PodPOMWeb.css used wrong case (undetected on -Win32!)
+  - fixed page titles when the name has no "-- description"
+
 1.10 07.11.2008
   - passthrough for non-POD files (i.e. images, css, etc.)
   - clicking hrefs in the TOC really loads the pages
