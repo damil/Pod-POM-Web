@@ -5,8 +5,9 @@ BODY, TD {
 
 H1, H2, H3, H4, H5, H6 {
   display:inline;
-  margin: 0px;
+  margin: 1ex 0 1ex 0;
 }
+
 PRE {
   background: #eee;
   border: 1px solid #888;

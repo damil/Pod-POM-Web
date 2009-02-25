@@ -1,5 +1,12 @@
 Revision history for Pod-POM-Web
 
+1.12
+  - sync TOC, automatically open nodes in TOC
+  - support aliases in links L<alias|http://...>
+  - fixed bugs in URLs containing special chars like L<http://foo$/...>
+  - disabled automatic links within text nodes
+  - links to external resources will open in a blank page
+
 1.11 13.11.2008
   - removed =begin BUGS section in Pod that was preventing proper display
   - fixed perlio layer for pass-through binary files

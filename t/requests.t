@@ -11,10 +11,10 @@ BEGIN {
 diag( "Testing Pod::POM::Web $Pod::POM::Web::VERSION, Perl $], $^X" );
 
 
-response_like("", qr/location=/, "redirect1");
-response_like("/", qr/location=/, "redirect2");
+response_like("", qr/frameset/, "index 1");
+response_like("/", qr/frameset/, "index 2");
 
-response_like("/index", qr/frameset/, "index");
+response_like("/index", qr/frameset/, "index 3");
 
 response_like("/toc", qr/Modules/, "toc");
 response_like("/toc/HTTP", qr/Request.*?Response/, "toc/HTTP");
