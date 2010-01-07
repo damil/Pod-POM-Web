@@ -12,8 +12,9 @@ installed.
 
 This application makes heavy use of dynamic HTML techniques
 like Ajax calls, autocompletion of search fields, etc., so 
-it requires a modern browser. So far it has been tested
-on MSIE 6.0 and Firefox 2.0.
+it requires a modern browser. It has been tested on Firefox 3.5.6
+and MSIE 8, but should also work more or less correctly in other browsers
+like Safari, Konqueror or Google Chrome.
 
 =head2 Searching
 
@@ -29,7 +30,8 @@ The input field should contain one of the (many) builtin
 perl functions. An autocompleter is automatically activated
 to help choose a proper function name. The answer will be
 an excerpt from the the L<perlfunc> documentation, just
-for that specific  function.
+for that specific  function (more or less equivalent to the
+C<perldoc -f> command).
 
 
 =item perlfaq
@@ -40,9 +42,11 @@ the word given in the search input field.
 =item modules
 
 The input field should contain a module name.
-An autocompleter is automatically activated
-to help choose a proper module name. 
 The answer will be the documentation for that module.
+If the local Perl installation was indexed (see below), then
+an autocompleter is automatically activated
+to help choose a proper module name. 
+
 
 =item fulltext
 
@@ -63,9 +67,11 @@ with some contextual excerpts of the matching words.
 
 The browsing tree starts with two sections B<Perl docs> and
 B<Pragmas>, containg core Perl documentation. The third section
+B<Scripts> reflects the structure of Perl scripts installed in 
+C<perl/bin>. The fourth section 
 B<Modules> reflects the structure of installed modules on the local
-machine (the various C<@INC> directories such as C<lib>, C<site/lib>,
-etc. are collapsed into a single tree). 
+machine (the various C<@INC> directories such as C<lib>, C<vendor/lib>,
+C<site/lib>, etc. are collapsed into a single tree). 
 Only top-level nodes are loaded initially; subnodes are
 fetched dynamically through Ajax calls when opening the nodes.
 
@@ -86,6 +92,12 @@ Clicking on the square C<+>/C<-> icon on the left of the
 label toggles the open/closed status of the node.
 
 =head3 Keyboard events
+
+Typing a few letters will automatically select
+the next node starting with those letters.
+
+Furthermore, the following special keys can be used to navigate
+within the tree :
 
 
 =over

@@ -1,5 +1,8 @@
-# BUG: fulltext search no longer submits
-
+# BUG: using E<..> within L<../..> (ex. see L<perlop/"IE<sol>O Operators">)
+# BUG: pod parsing bug in perlre (end of doc)
+# BUG: doc files taken as pragmas (lwptut, lwpcook, pip, pler)
+# TODO: exploit doc index X<...>
+# TODO: do something with perllocal (installation history)
 
 #======================================================================
 package Pod::POM::Web; # see doc at end of file
@@ -10,13 +13,13 @@ no warnings 'uninitialized';
 
 use Pod::POM 0.17;              # parsing Pod
 use List::Util      qw/max/;    # maximum
-use List::MoreUtils qw/uniq firstval/;
+use List::MoreUtils qw/uniq firstval any/;
 use Module::CoreList;           # asking if a module belongs to Perl core
 use HTTP::Daemon;               # for the builtin HTTP server
 use URI;                        # parsing incoming requests
 use URI::QueryParam;
 use MIME::Types;                # translate file extension into MIME type
-use Alien::GvaScript 1.10;      # javascript files
+use Alien::GvaScript 1.019005;  # javascript files
 use Encode::Guess;              # guessing if pod source is utf8 or latin1
 use Config;                     # where are the script directories
 
@@ -25,7 +28,7 @@ use Config;                     # where are the script directories
 # globals
 #----------------------------------------------------------------------
 
-our $VERSION = '1.12';
+our $VERSION = '1.13';
 
 # some subdirs never contain Pod documentation
 my @ignore_toc_dirs = qw/auto unicore/; 
@@ -33,7 +36,7 @@ my @ignore_toc_dirs = qw/auto unicore/;
 # filter @INC (don't want '.', nor server_root added by mod_perl)
 my $server_root = eval {Apache2::ServerUtil::server_root()} || "";
 our                # because accessed from Pod::POM::Web::Indexer
-   @search_dirs = grep {$_ ne '.' && $_ ne $server_root} @INC;
+   @search_dirs = grep {!/^\./ && $_ ne $server_root} @INC;
 
 # directories for executable perl scripts
 my @config_script_dirs = qw/sitescriptexp vendorscriptexp scriptdirexp/;
@@ -50,8 +53,6 @@ my $no_indexer = eval {require Pod::POM::Web::Indexer} ? 0 : $@;
 
 # CPAN latest version info (tentative, but disabled because CPAN is too slow)
 my $has_cpan = 0; # eval {require CPAN};
-
-
 
 # A sequence of optional filters to apply to the source code before
 # running it through Pod::POM. Source code is passed in $_[0] and 
@@ -123,7 +124,6 @@ sub new  {
   if (!$no_indexer && $class eq __PACKAGE__) {
     $class = "Pod::POM::Web::Indexer";
   }
-
   for (ref $request) {
 
     /^Apache/ and do { # coming from mod_perl
@@ -232,8 +232,8 @@ sub index_frameset{
 <html>
   <head><title>Perl documentation</title></head>
   <frameset cols="25%, 75%">
-    <frame name="tocFrame"     src="$ini_toc"></frame>
-    <frame name="contentFrame" src="$ini_content"></frame>
+    <frame name="tocFrame"     src="$ini_toc">
+    <frame name="contentFrame" src="$ini_content">
   </frameset>
 </html>
 __EOHTML__
@@ -321,10 +321,12 @@ sub serve_file {
   my $mime_type = MIME::Types->new->mimeTypeOf($extension);
   my $content = $self->slurp_file($fullpath, ":raw");
   my $mtime   = (stat $fullpath)[9];
-  $self->send_content({content   => $content, 
-                       mtime     => $mtime, 
-                       mime_type => $mime_type});
+  $self->send_content( {
+          content   => $content, 
+          mtime     => $mtime, 
+          mime_type => $mime_type});
 }
+
 
 
 sub serve_pod {
@@ -334,8 +336,9 @@ sub serve_pod {
   # if several sources, will be first *.pod, then *.pm
   my @sources = $self->find_source($path) or die "No file for '$path'";
   my $mtime   = max map {(stat $_)[9]} @sources;
-  my $content = $path eq 'perltoc' ? $self->fake_perltoc 
-                                   : $self->slurp_file($sources[0], ":crlf");
+  my $content = $path =~ /\bperltoc\b/
+                   ? $self->fake_perltoc 
+                   : $self->slurp_file($sources[0], ":crlf");
 
   my $version = @sources > 1 
     ? $self->parse_version($self->slurp_file($sources[-1], ":crlf")) 
@@ -385,11 +388,10 @@ sub fake_perltoc {
 
   return "=head1 NAME\n\nperltoc\n\n=head1 DESCRIPTION\n\n"
        . "I<Sorry, this page cannot be displayed in HTML by Pod:POM::Web "
-       . "(too many nodes and HTML ids -- will eat all your CPU). "
-       . "If you really need it, please consult the source.>";
+       . "(too CPU-intensive). "
+       . "If you really need it, please consult the source, using the link "
+       . "in the top-right corner.>";
 }
-
-
 
 
 sub serve_script {
@@ -425,10 +427,6 @@ sub serve_script {
 }
 
 
-
-
-
-
 sub find_source {
   my ($self, $path) = @_;
 
@@ -454,9 +452,6 @@ sub find_source {
   }
   return;
 }
-
-
-
 
 
 sub pod2pom {
@@ -521,7 +516,7 @@ sub toc_pragmas {
   my ($self) = @_;
 
   my $entries  = $self->find_entries_for("");    # files found at root level
-  delete $entries->{$_} for @ignore_toc_dirs; 
+  delete $entries->{$_} for @ignore_toc_dirs, qw/pod pods inc/; 
   delete $entries->{$_} for grep {/^perl/ or !/^[[:lower:]]/} keys %$entries;
 
   return $self->send_html($self->htmlize_entries($entries));
@@ -559,8 +554,6 @@ sub toc_scripts {
 }
 
 
-
-
 sub find_entries_for {
   my ($self, $prefix) = @_;
 
@@ -595,11 +588,6 @@ sub find_entries_for {
   }
   return \%entries;
 }
-
-
-
-
-
 
 
 sub htmlize_perldocs {
@@ -690,6 +678,14 @@ sub main_toc {
   my @funcs = map {$_->title} grep {$_->content =~ /\S/} $self->perlfunc_items;
   s|[/\s(].*||s foreach @funcs;
   my $json_funcs = "[" . join(",", map {qq{"$_"}} uniq @funcs) . "]";
+
+  # perlVAR entries in JSON format for the DHTML autocompleter
+  my @vars = map {$_->title} grep {!/->/} map {@$_} $self->perlvar_items;
+  s|\s*X<.*||s foreach @vars;
+  s|\\|\\\\|g  foreach @vars;
+  s|"|\\"|g    foreach @vars;
+  my $json_vars = "[" . join(",", map {qq{"$_"}} uniq @vars) . "]";
+
   my $js_no_indexer = $no_indexer ? 'true' : 'false';
 
   my @perl_sections = map {closed_node(
@@ -724,6 +720,7 @@ sub main_toc {
   <script>
     var treeNavigator;
     var perlfuncs = $json_funcs;
+    var perlvars  = $json_vars;
     var completers = {};
     var no_indexer = $js_no_indexer;
 
@@ -732,16 +729,22 @@ sub main_toc {
     }
 
     function resize_tree_navigator() {
-      var height = document.body.clientHeight
-                 - \$('toc_frame_top').scrollHeight -5;
-      \$('TN_tree').style.height = height + "px";
-    }
+      // compute available height -- comes either from body or documentElement,
+      // depending on browser and on compatibility mode !!
+      var doc_el_height = document.documentElement.clientHeight;
+      var avail_height 
+        = (Prototype.Browser.IE && doc_el_height) ? doc_el_height
+                                                  : document.body.clientHeight;
 
+      var tree_height = avail_height - \$('toc_frame_top').scrollHeight - 5;
+      if (tree_height > 100)
+        \$('TN_tree').style.height = tree_height + "px";
+    }
 
     function open_nodes(first_node, rest) {
 
       var node = \$(first_node);
-      if (!node) return;
+      if (!node || !treeNavigator) return;
 
       // shift to next node in sequence
       first_node = rest.shift();
@@ -814,8 +817,20 @@ sub main_toc {
 
       completers.perlfunc = new GvaScript.AutoCompleter(
              perlfuncs, 
-             {minimumChars: 1, minWidth: 100, offsetX: -20});
+             {minimumChars: 1, 
+              minWidth: 100, 
+              offsetX: -20, 
+              autoSuggestDelay: 400});
       completers.perlfunc.onComplete = submit_on_event;
+
+      completers.perlvar = new GvaScript.AutoCompleter(
+             perlvars, 
+             {minimumChars: 1, 
+              minWidth: 100, 
+              offsetX: -20, 
+              autoSuggestDelay: 400});
+      completers.perlvar.onComplete = submit_on_event;
+
       if (!no_indexer) {
         completers.modlist  = new GvaScript.AutoCompleter(
              "search?source=modlist&search=", 
@@ -825,16 +840,20 @@ sub main_toc {
 
       resize_tree_navigator();
       $select_ini
-      \$('search_form').search.focus();
+
+// DAL COMMENTED OUT 31.12.09, better to leave focus in Browse section
+//      \$('search_form').search.focus();
     }
-    window.onload = setup;
+
+    document.observe('dom:loaded', setup);
+//    window.onload = setup;
     window.onresize = resize_tree_navigator;
 
     function displayContent(event) {
         var label = event.controller.label(event.target);
         if (label && label.tagName == "A") {
           label.focus();
-          return Event.stopNone;
+          return Event. stopNone;
         }
     }
 
@@ -844,7 +863,8 @@ sub main_toc {
 
      switch (input.form.source.selectedIndex) {
        case 0: completers.perlfunc.autocomplete(input); break;
-       case 2: if (!no_indexer)
+       case 1: completers.perlvar.autocomplete(input); break;
+       case 3: if (!no_indexer)
                  completers.modlist.autocomplete(input); 
                break;
      }
@@ -855,7 +875,6 @@ sub main_toc {
   <style>
    .small_title {color: midnightblue; font-weight: bold; padding: 0 3 0 3}
    FORM     {margin:0px}
-   BODY     {margin:0px; font-size: 70%}
    BODY     {margin:0px; font-size: 70%; overflow-x: hidden} 
    DIV      {margin:0px; width: 100%}
    #TN_tree {overflow-y:scroll; overflow-x: hidden}
@@ -876,19 +895,19 @@ Perl Documentation
 <span class="small_title">Search in</span>
      <select name="source">
       <option>perlfunc</option>
+      <option>perlvar</option>
       <option>perlfaq</option>
       <option>modules</option>
       <option>fulltext</option>
      </select><br>
-<span class="small_title">&nbsp;for</span><input 
+<span class="small_title">&nbsp;for&nbsp;</span><input 
          name="search" size="15"
          autocomplete="off"
          onfocus="maybe_complete(this)">
 </form>
 <br>
 <div class="small_title"
-     style="border-bottom: 1px solid">Browse
-</div>
+     style="border-bottom: 1px solid">Browse</div>
 </div>
 
 <!-- In principle the tree navigator below would best belong in a 
@@ -913,11 +932,12 @@ sub dispatch_search {
 
   my $params = $self->{params};
   my $source = $params->{source};
-  my $method = {perlfunc => 'perlfunc',
-                perlfaq  => 'perlfaq',
-                modules  => 'serve_pod',
-                fulltext => 'fulltext', 
-                modlist  => 'modlist', 
+  my $method = {perlfunc      => 'perlfunc',
+                perlvar       => 'perlvar',
+                perlfaq       => 'perlfaq',
+                modules       => 'serve_pod',
+                fulltext      => 'fulltext',
+                modlist       => 'modlist',
                 }->{$source}  or die "cannot search in '$source'";
 
   if ($method =~ /fulltext|modlist/ and $no_indexer) {
@@ -951,7 +971,9 @@ sub perlfunc_items {
 sub perlfunc {
   my ($self, $func) = @_;
   my @items = grep {$_->title =~ /^$func\b/} $self->perlfunc_items
-     or return print("No documentation found for perl function '$func'");
+     or return $self->send_html("No documentation found for perl "
+                               ."function '<tt>$func</tt>'");
+
   my $view    = $self->mk_view(path => "perlfunc/$func");
 
   my @li_items = map {$_->present($view)} @items;
@@ -962,6 +984,63 @@ sub perlfunc {
 </head>
 <body>
 <h2>Extract from <a href="$self->{root_url}/perlfunc">perlfunc</a></h2>
+
+<ul>@li_items</ul>
+</body>
+__EOHTML__
+}
+
+
+
+
+
+my @_perlvar_items; # simple-minded cache
+
+sub perlvar_items {
+  my ($self) = @_;
+
+  unless (@_perlvar_items) {
+
+    # get items defining variables
+    my $varpom = $self->pod2pom($self->find_source("perlvar"));
+    my ($description) = grep {$_->title eq 'DESCRIPTION'} $varpom->head1;
+    my ($names)       = grep {$_->title eq 'Predefined Names'} 
+                             $description->head2;
+    my @items = map {$_->item} $names->over;
+
+    # group items having common content
+    my $tmp = [];
+    foreach my $item (@items) {
+      push @$tmp, $item;
+      if ($item->content . "") { # force stringification
+        push @_perlvar_items, $tmp;
+        $tmp = [];
+      }
+    }
+  };
+  return @_perlvar_items;
+}
+
+
+sub perlvar {
+  my ($self, $var) = @_;
+
+  $DB::single = 1;
+
+  my @items = grep {any {$_->title =~ /^\Q$var\E(\s|$)/} @$_}
+                   $self->perlvar_items
+     or return $self->send_html("No documentation found for perl "
+                               ."variable '<tt>$var</tt>'");
+  my $view    = $self->mk_view(path => "perlvar/$var");
+
+  my @li_items = map {$_->present($view)} map {@$_} @items;
+  return $self->send_html(<<__EOHTML__);
+<html>
+<head>
+  <link href="$self->{root_url}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+</head>
+<body>
+<h2>Extract from <a href="$self->{root_url}/perlvar">perlvar</a></h2>
 
 <ul>@li_items</ul>
 </body>
@@ -1037,7 +1116,12 @@ sub mk_view {
 
 sub send_html {
   my ($self, $html, $mtime) = @_;
-  $self->send_content({content => $_[1], code => 200, mtime => $mtime});
+
+  # TEMPORARY HACK
+  $html =~ s[<head>]
+            [<head>\n<meta http-equiv="X-UA-Compatible" content="IE=edge">];
+
+  $self->send_content({content => $html, code => 200, mtime => $mtime});
 }
 
 
@@ -1204,15 +1288,22 @@ package Pod::POM::View::HTML::_PerlDoc; # View package
 #======================================================================
 use strict;
 use warnings;
-no warnings 'uninitialized';
-use base qw/ Pod::POM::View::HTML /;
-use POSIX  qw/strftime/; # date formatting
+no warnings qw/uninitialized/;
+use base    qw/Pod::POM::View::HTML/;
+use POSIX   qw/strftime/;              # date formatting
 
 # SUPER::view_seq_text tries to find links automatically ... but is buggy
 # for URLs that contain '$' or ' '. So we disable it, and only consider
 # links explicitly marked with L<..>, handled in view_seq_link() below.
 sub view_seq_text {
   my ($self, $text) = @_;
+
+  for ($text) {
+    s/&/&amp;/g;
+    s/</&lt;/g;
+    s/>/&gt;/g;
+  }
+
   return $text;
 }
 
@@ -1307,6 +1398,11 @@ sub _title_to_id {
 sub view_pod {
   my ($self, $pom) = @_;
 
+  # compute view
+  my $content = $pom->content->present($self)
+    or return "no documentation found in <tt>$self->{path}</tt><br>\n"
+            . "<a href='$self->{root_url}/source/$self->{path}'>Source</a>";
+
   # parse name and description
   my ($name_h1) = grep {$_->title =~ /^NAME\b/} $pom->head1();
   my $doc_title = $name_h1 ? $name_h1->content : 'Untitled';
@@ -1315,29 +1411,48 @@ sub view_pod {
   $name ||= $doc_title;
   $name =~ s/\n.*//s;
 
-  # version and installation date
-  my $version   = $self->{version} ? "v. $self->{version}, " : ""; 
+  # installation date
   my $installed = strftime("%x", localtime($self->{mtime}));
 
-  # is this module in Perl core ?
-  my $core_release = Module::CoreList->first_release($self->{mod_name}) || "";
-  my $orig_version 
-         = $Module::CoreList::version{$core_release}{$self->{mod_name}} || "";
-  $orig_version &&= "v. $orig_version ";
-  $core_release &&= "; ${orig_version}entered Perl core in $core_release";
+  # if this is a module (and not a script), get additional info
+  my ($version, $core_release, $orig_version, $cpan_info, $module_refs)
+    = ("") x 6;
+  if (my $mod_name = $self->{mod_name}) {
 
-  my $cpan_info = "";
-  if ($has_cpan) {
-    my $mod = CPAN::Shell->expand("Module", $self->{mod_name});
-    if ($mod) {
-      my $cpan_version = $mod->cpan_version;
-      $cpan_info = "; CPAN has v. $cpan_version" if $cpan_version ne $self->{version};
+    # version 
+    $version = $self->{version} ? "v. $self->{version}, " : ""; 
+
+    # is this module in Perl core ?
+    $core_release = Module::CoreList->first_release($mod_name) || "";
+    $orig_version 
+      = $Module::CoreList::version{$core_release}{$mod_name} || "";
+    $orig_version &&= "v. $orig_version ";
+    $core_release &&= "; ${orig_version}entered Perl core in $core_release";
+
+    # hyperlinks to various internet resources
+    $module_refs = qq{<br>
+     <a href="http://search.cpan.org/perldoc/$mod_name"
+        target="_blank">CPAN</a> |
+     <a href="http://www.annocpan.org/?mode=search&field=Module&name=$mod_name"
+        target="_blank">Anno</a> |
+     <a href="http://www.cpanforum.com/search/?what=modulee&name=$mod_name"
+        target="_blank">Forum</a> |
+     <a href="http://cpan.uwinnipeg.ca/search/?mode=modulee&query=$mod_name"
+        target="_blank">Kobes</a>
+    };
+
+    if ($has_cpan) {
+      my $mod = CPAN::Shell->expand("Module", $mod_name);
+      if ($mod) {
+        my $cpan_version = $mod->cpan_version;
+        $cpan_info = "; CPAN has v. $cpan_version" 
+          if $cpan_version ne $self->{version};
+      }
     }
   }
 
-  # compute view
-  my $content = $pom->content->present($self);
   my $toc = $self->make_toc($pom, 0); 
+
   return <<__EOHTML__
 <html>
 <head>
@@ -1356,7 +1471,10 @@ sub view_pod {
       );
 
      var tocFrame = window.parent.frames.tocFrame;
-     if (tocFrame) tocFrame.eval("selectToc('$name')");
+     if (tocFrame) {
+       try {tocFrame.eval("selectToc('$name')")}
+       catch(e) {};
+      }
     }
     window.onload = setup;
     function jumpto_href(event) {
@@ -1399,15 +1517,8 @@ sub view_pod {
    <span id="title_descr">$description</span>
 
    <span id="ref_box">
-   <a href="$self->{root_url}/source/$self->{path}">Source</a><br>
-   <a href="http://search.cpan.org/perldoc/$self->{mod_name}"
-      target="_blank">CPAN</a> |
-   <a href="http://www.annocpan.org/?mode=search&field=Module&name=$self->{mod_name}"
-      target="_blank">Anno</a> |
-   <a href="http://www.cpanforum.com/search/?what=modulee&name=$self->{mod_name}"
-      target="_blank">Forum</a> |
-   <a href="http://cpan.uwinnipeg.ca/search/?mode=modulee&query=$self->{mod_name}"
-      target="_blank">Kobes</a>
+   <a href="$self->{root_url}/source/$self->{path}">Source</a>
+   $module_refs
    </span>
 
    <div class="TN_content">
@@ -1649,11 +1760,15 @@ Then navigate to URL L<http://localhost/perldoc>.
 =head3 As a cgi-bin script 
 
 Alternatively, you can run this application as a cgi-script
-by writing a simple file in your C<cgi-bin> directory, like this :
+by writing a simple file F<perldoc> in your C<cgi-bin> directory,
+containing :
 
   #!/path/to/perl
   use Pod::POM::Web;
   Pod::POM::Web->handler;
+
+Make this script executable, 
+then navigate to URL L<http://localhost/cgi-bin/perldoc>.
 
 The same can be done for running under mod_perl Registry
 (write the same script as above and put it in your
@@ -1671,6 +1786,16 @@ the builtin HTTP server :
 This is useful if you have no other HTTP server, or if
 you want to run this module under the perl debugger.
 
+Then navigate to URL L<http://localhost:8080>.
+
+=head2 Opening a specific initial page
+
+By default, the initial page displayed by the application
+is F<perl>. This can be changed by supplying an C<open> argument
+with the name of any documentation page: for example
+
+  http://localhost:8080?open=Pod/POM/Web
+  http://localhost:8080?open=perlfaq
 
 =head2 Note about security
 
