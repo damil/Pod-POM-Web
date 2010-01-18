@@ -5,7 +5,9 @@ Revision history for Pod-POM-Web
   - no HTML rendering for perltoc (too slow)
   - support for perlvar
   - computing TOC layout, works for MSIE6, MSIE8, FF, Chrome and Safari
-  - many JS fixes (done in Alien-GvaScript 1.19.5)
+  - many JS fixes (done in Alien-GvaScript 1.20)
+  - applied patch by Elliot Shank for specifiying the page title
+  - tested on MSIE8, FF3.5, safari4, Chrome3
 
 1.12
   - sync TOC, automatically open nodes in TOC

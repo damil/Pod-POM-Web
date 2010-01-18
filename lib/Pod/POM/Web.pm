@@ -1,9 +1,3 @@
-# BUG: using E<..> within L<../..> (ex. see L<perlop/"IE<sol>O Operators">)
-# BUG: pod parsing bug in perlre (end of doc)
-# BUG: doc files taken as pragmas (lwptut, lwpcook, pip, pler)
-# TODO: exploit doc index X<...>
-# TODO: do something with perllocal (installation history)
-
 #======================================================================
 package Pod::POM::Web; # see doc at end of file
 #======================================================================
@@ -19,10 +13,9 @@ use HTTP::Daemon;               # for the builtin HTTP server
 use URI;                        # parsing incoming requests
 use URI::QueryParam;
 use MIME::Types;                # translate file extension into MIME type
-use Alien::GvaScript 1.019005;  # javascript files
+use Alien::GvaScript 1.021000;  # javascript files
 use Encode::Guess;              # guessing if pod source is utf8 or latin1
 use Config;                     # where are the script directories
-
 
 #----------------------------------------------------------------------
 # globals
@@ -83,7 +76,7 @@ our # because used by Pod::POM::View::HTML::_PerlDoc
 #----------------------------------------------------------------------
 
 sub server { # builtin HTTP server; unused if running under Apache
-  my ($class, $port) = @_;
+  my ($class, $port, $options) = @_;
   $port ||= 8080;
 
   my $daemon = HTTP::Daemon->new(LocalPort => $port,
@@ -97,7 +90,7 @@ sub server { # builtin HTTP server; unused if running under Apache
       print STDERR "URL : " , $req->url, "\n";
       $client_connection->force_last_request;    # patch by CDOLAN
       my $response = HTTP::Response->new;
-      $class->handler($req, $response);
+      $class->handler($req, $response, $options);
       $client_connection->send_response($response);
     }
     $client_connection->close;
@@ -108,8 +101,8 @@ sub server { # builtin HTTP server; unused if running under Apache
 
 
 sub handler : method  {
-  my ($class, $request, $response) = @_; 
-  my $self = $class->new($request, $response);
+  my ($class, $request, $response, $options) = @_; 
+  my $self = $class->new($request, $response, $options);
   eval { $self->dispatch_request(); 1}
     or $self->send_content({content => $@, code => 500});  
   return 0; # Apache2::Const::OK;
@@ -117,8 +110,9 @@ sub handler : method  {
 
 
 sub new  {
-  my ($class, $request, $response) = @_; 
-  my $self;
+  my ($class, $request, $response, $options) = @_; 
+  $options ||= {};
+  my $self = {%$options};
 
   # cheat: will create an instance of the Indexer subclass if possible
   if (!$no_indexer && $class eq __PACKAGE__) {
@@ -132,20 +126,18 @@ sub new  {
       $q->query($request->args);
       my $params = $q->query_form_hash;
       (my $uri = $request->uri) =~ s/$path$//;
-      $self = {response => $request, # Apache API: same object for both
-               root_url => $uri,
-               path     => $path,
-               params   => $params,
-             };
+      $self->{response} = $request; # Apache API: same object for both
+      $self->{root_url} = $uri;
+      $self->{path}     = $path;
+      $self->{params}   = $params;
       last;
     };
 
     /^HTTP/ and do { # coming from HTTP::Daemon // server() method above
-      $self = {response => $response,
-               root_url => "",
-               path     => $request->url->path,
-               params   => $request->url->query_form_hash,
-             };
+      $self->{response} = $response;
+      $self->{root_url} = "";
+      $self->{path}     = $request->url->path;
+      $self->{params}   = $request->url->query_form_hash;
       last;
     };
 
@@ -153,11 +145,10 @@ sub new  {
     my $q = URI->new;
     $q->query($ENV{QUERY_STRING});
     my $params = $q->query_form_hash;
-    $self = {response => undef, 
-             root_url => $ENV{SCRIPT_NAME},
-             path     => $ENV{PATH_INFO},
-             params   => $params,
-           };
+    $self->{response} = undef;
+    $self->{root_url} = $ENV{SCRIPT_NAME};
+    $self->{path}     = $ENV{PATH_INFO};
+    $self->{params}   = $params;
   }
 
   bless $self, $class;
@@ -228,9 +219,13 @@ sub index_frameset{
   my $ini_content = $ini || "perl";
   my $ini_toc     = $ini ? "toc?open=$ini" : "toc";
 
+  # HTML title
+  my $title = $self->{page_title} || 'Perl documentation';
+  $title =~ s/([&<>"])/$escape_entity{$1}/g;
+
   return $self->send_html(<<__EOHTML__);
 <html>
-  <head><title>Perl documentation</title></head>
+  <head><title>$title</title></head>
   <frameset cols="25%, 75%">
     <frame name="tocFrame"     src="$ini_toc">
     <frame name="contentFrame" src="$ini_content">
@@ -840,14 +835,11 @@ sub main_toc {
 
       resize_tree_navigator();
       $select_ini
-
-// DAL COMMENTED OUT 31.12.09, better to leave focus in Browse section
-//      \$('search_form').search.focus();
     }
 
     document.observe('dom:loaded', setup);
-//    window.onload = setup;
-    window.onresize = resize_tree_navigator;
+    window.onresize = resize_tree_navigator; 
+    // Note: observe('resize') doesn't work. Why ?
 
     function displayContent(event) {
         var label = event.controller.label(event.target);
@@ -1025,8 +1017,6 @@ sub perlvar_items {
 sub perlvar {
   my ($self, $var) = @_;
 
-  $DB::single = 1;
-
   my @items = grep {any {$_->title =~ /^\Q$var\E(\s|$)/} @$_}
                    $self->perlvar_items
      or return $self->send_html("No documentation found for perl "
@@ -1117,7 +1107,7 @@ sub mk_view {
 sub send_html {
   my ($self, $html, $mtime) = @_;
 
-  # TEMPORARY HACK
+  # dirty hack for MSIE8 (TODO: send proper HTTP header instead)
   $html =~ s[<head>]
             [<head>\n<meta http-equiv="X-UA-Compatible" content="IE=edge">];
 
@@ -1722,11 +1712,12 @@ links to CPAN sites
 
 =back
 
-
+The application may be hosted by an existing Web server, or otherwise
+may run its own builtin Web server.
 
 The DHTML code for navigating through documentation trees requires a
 modern browser. So far it has been tested on Microsoft Internet
-Explorer 6.0 and Firefox 2.0
+Explorer 8.0, Firefox 3.5, Google Chrome 3.0 and Safari 4.0.4.
 
 =head1 USAGE
 
@@ -1743,9 +1734,7 @@ the web server :
 
 =head3 As a mod_perl service
 
-The recommended way to run this application is within
-a mod_perl environment. If you have Apache2 
-with mod_perl 2.0, then edit your 
+If you have Apache2 with mod_perl 2.0, then edit your 
 F<perl.conf> as follows :
 
   PerlModule Apache2::RequestRec
@@ -1796,6 +1785,17 @@ with the name of any documentation page: for example
 
   http://localhost:8080?open=Pod/POM/Web
   http://localhost:8080?open=perlfaq
+
+=head2 Setting a specific title
+
+If you run several instances of C<Pod::POM::Web> simultaneously, you may
+want them to have distinct titles. This can be done like this:
+
+  perl -MPod::POM::Web -e "Pod::POM::Web->server(undef, 'My Own Perl Doc')"
+
+
+
+=head1 MISCELLANEOUS
 
 =head2 Note about security
 
@@ -1864,7 +1864,7 @@ periodically downloading the AnnoCPAN database.
 =back
 
 
-=head1 AUTHORING
+=head1 HINTS TO POD AUTHORING
 
 =head2 Images
 
@@ -1884,6 +1884,30 @@ or
 Here it is assumed that auxiliary files C<pretty_diagram.jpg> or 
 C<try.svg> are in the same directory than the POD source; but 
 of course relative or absolute links can be used.
+
+
+
+=head1 METHODS
+
+=head2 handler
+
+  Pod::POM::Web->handler($request, $response, $options);
+
+Public entry point for serving a request. Objects C<$request> and
+C<$response> are specific to the hosting HTTP server (modperl, HTTP::Daemon
+or cgi-bin); C<$options> is a hashref that currently contains
+only one possible entry : C<page_title>, for specifying the HTML title
+of the application (useful if you run several concurrent instances
+of Pod::POM::Web).
+
+=head2 server
+
+  Pod::POM::Web->server($port, $options);
+
+Starts the event loop for the builtin HTTP server.
+The C<$port> number can be given as optional first argument
+(default is 8080). The second argument C<$options> may be
+used to specify a page title (see L</"handler"> method above).
 
 
 =head1 ACKNOWLEDGEMENTS
@@ -1919,7 +1943,8 @@ to Chris Dolan who supplied many useful suggestions and patches
 (esp. integration with AnnoCPAN), 
 to Rémi Pauchet who pointed out a regression bug with Firefox CSS, 
 to Alexandre Jousset who fixed a bug in the TOC display,
-and to Cédric Bouvier who who pointed out a IO bug in serving binary files.
+to Cédric Bouvier who pointed out a IO bug in serving binary files,
+and to Elliot Shank who contributed the "page_title" option.
 
 
 
@@ -1951,7 +1976,7 @@ Laurent Dami, C<< <laurent.d...@justice.ge.ch> >>
 
 =head1 COPYRIGHT & LICENSE
 
-Copyright 2007 Laurent Dami, all rights reserved.
+Copyright 2007, 2010 Laurent Dami, all rights reserved.
 
 This program is free software; you can redistribute it and/or modify it
 under the same terms as Perl itself.
@@ -1959,7 +1984,6 @@ under the same terms as Perl itself.
 =head1 TODO
 
   - fix XUL error message for CSS
-  - HTTP caching headers (but for how long ?)
   - real tests !
   - checks and fallback solution for systems without perlfunc and perlfaq
   - factorization (esp. initial <head> in html pages)
@@ -1970,3 +1994,9 @@ under the same terms as Perl itself.
       - CPAN : C<CPAN::WAIT> in L<..> 
       - perlre : line 940, code <I ...> parsed as I<...>
       - =head1 NAME B<..> in Data::ShowTable
+   - bug using E<..> within L<../..> (ex. see L<perlop/"IE<sol>O Operators">)
+   - declare pod parsing bug in perlre (end of doc)
+   - bug: doc files taken as pragmas (lwptut, lwpcook, pip, pler)
+   - exploit doc index X<...>
+   - do something with perllocal (installation history)
+

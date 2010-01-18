@@ -180,6 +180,12 @@ above
 L<Pod::Webserver> is another, earlier implementation of a Perl documentation 
 server.
 
+L<Pod::Browser> is a L<Catalyst> application serving local POD modules.
+L<Pod::Server> is yet another 
+
+
+
+
 Perl documentation can be browsed in command-line mode
 through the L<perldoc> utility.
 
