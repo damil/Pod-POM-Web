@@ -1121,6 +1121,9 @@ sub send_content {
   my $encoding  = guess_encoding($args->{content}, qw/ascii utf8 latin1/);
   my $charset   = ref $encoding ? $encoding->name : "";
      $charset   =~ s/^ascii/US-ascii/; # Firefox insists on that imperialist name
+
+$charset = "";
+
   my $length    = length $args->{content};
   my $mime_type = $args->{mime_type} || "text/html";
      $mime_type .= "; charset=$charset" if $charset and $mime_type =~ /html/;
@@ -1983,6 +1986,7 @@ under the same terms as Perl itself.
 
 =head1 TODO
 
+  - display bug with entity E<sol>, for ex. in Capture::Tiny
   - fix XUL error message for CSS
   - real tests !
   - checks and fallback solution for systems without perlfunc and perlfaq
