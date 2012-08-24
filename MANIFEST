@@ -12,3 +12,4 @@ t/indexer.t
 t/pod.t
 t/requests.t
 t/TODO.txt
+META.json

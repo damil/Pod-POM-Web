@@ -242,6 +242,15 @@ sub get_abstract {  # override from Web.pm
 # INDEXING
 #----------------------------------------------------------------------
 
+sub import { # export the "index" function if called from command-line
+  my $class = shift;
+  my ($package, $filename) = caller;
+
+  no strict 'refs';
+  *{'main::index'} = sub {$class->new->index(@_)} 
+    if $package eq 'main' and $filename eq '-e';
+}
+
 
 sub index {
   my ($self, %options) = @_;
@@ -420,7 +429,7 @@ Pod::POM::Web::Indexer - fulltext search for Pod::POM::Web
 
 =head1 SYNOPSIS
 
-  perl -MPod::POM::Web::Indexer -e "Pod::POM::Web::Indexer->new->index"
+  perl -MPod::POM::Web::Indexer -e index
 
 =head1 DESCRIPTION
 
@@ -483,6 +492,11 @@ space, and does not seem to be very relevant for searching
 Perl documentation.
 
 =back
+
+The C<index> function is exported into the C<main::> namespace if perl
+is called with the C<-e> flag, so that you can write
+
+  perl -MPod::POM::Web::Indexer -e index
 
 
 =head1 PERFORMANCES

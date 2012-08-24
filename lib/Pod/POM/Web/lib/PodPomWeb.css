@@ -4,8 +4,7 @@ BODY, TD {
 }
 
 H1, H2, H3, H4, H5, H6 {
-  display: -moz-inline-box;
-  display:inline-block;
+  display:inline;
   margin: 1ex 0 1ex 0;
 }
 

@@ -1,5 +1,23 @@
 Revision history for Pod-POM-Web
 
+1.17 01.05.2011
+  - skip tests on systems that do not have 'perlfunc.pod' or 'perlvar.pod'
+
+1.16 28.04.2011
+  - Export 'server' and 'index' functions into main:: namespace if
+    called from command-line (suggested by DOLMEN -- Olivier Mengué)
+  - fix titles containing POD markup
+  - explicit error message if perlfunc or perlvar are not installed
+
+1.15 20.11.2010
+  - H1 header can be either NAME or TITLE
+  - adapt to new structure of perlvar.pod in bleadperl
+  - CSS fix for diplaying AnnoCPAN notes
+  - dependency on Pod::POM 0.25
+
+1.14 08.06.2010 
+  - fix for pods/perl.pod change of structure since perl 5.12
+
 1.13
   - ignoring dirs starting with '.'
   - no HTML rendering for perltoc (too slow)
