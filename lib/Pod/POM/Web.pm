@@ -22,7 +22,7 @@ use Getopt::Long    qw/GetOptions/; # parsing options from command-line
 # globals
 #----------------------------------------------------------------------
 
-our $VERSION = '1.17';
+our $VERSION = '1.18';
 
 # some subdirs never contain Pod documentation
 my @ignore_toc_dirs = qw/auto unicore/; 
@@ -1678,6 +1678,8 @@ sub DESTROY {} # avoid AUTOLOAD
 
 
 __END__
+
+=encoding ISO8859-1
 
 =head1 NAME
 

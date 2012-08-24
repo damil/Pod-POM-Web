@@ -1,5 +1,8 @@
 Revision history for Pod-POM-Web
 
+1.18 24.08.2012
+  - fixed [rt.cpan.org #79079] Non-ASCII character seen before =encoding
+
 1.17 01.05.2011
   - skip tests on systems that do not have 'perlfunc.pod' or 'perlvar.pod'
 
