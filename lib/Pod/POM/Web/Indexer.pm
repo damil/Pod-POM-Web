@@ -11,7 +11,8 @@ use Time::HiRes     qw/time/;
 use Search::Indexer 0.75;
 use BerkeleyDB;
 
-use base 'Pod::POM::Web';
+use parent 'Pod::POM::Web';
+our $VERSION = 1.19;
 
 #----------------------------------------------------------------------
 # Initializations

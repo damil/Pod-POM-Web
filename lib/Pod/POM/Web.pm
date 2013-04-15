@@ -22,7 +22,7 @@ use Getopt::Long    qw/GetOptions/; # parsing options from command-line
 # globals
 #----------------------------------------------------------------------
 
-our $VERSION = '1.18';
+our $VERSION = '1.19';
 
 # some subdirs never contain Pod documentation
 my @ignore_toc_dirs = qw/auto unicore/; 

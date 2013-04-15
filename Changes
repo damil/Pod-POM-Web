@@ -1,5 +1,8 @@
 Revision history for Pod-POM-Web
 
+1.19 15.04.2013
+  - meta_merge ref. to Github repo
+
 1.18 24.08.2012
   - fixed [rt.cpan.org #79079] Non-ASCII character seen before =encoding
 

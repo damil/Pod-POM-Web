@@ -8,6 +8,7 @@ my $builder = Module::Build->new(
     dist_author         => 'Laurent Dami <laurent.d...@justice.ge.ch>',
     dist_version_from   => 'lib/Pod/POM/Web.pm',
     requires => {
+      'parent'               => 0,
       'Alien::GvaScript'     => 1.021000,
       'Pod::POM'             => 0.25,
       'Pod::POM::View::HTML' => 0,
@@ -32,8 +33,11 @@ my $builder = Module::Build->new(
       'Test::More' => 0,
     },
     add_to_cleanup      => [ 'Pod-POM-Web-*' ],
-    create_makefile_pl  => 'traditional',
-
+    meta_merge => {
+      resources => {
+        repository => 'https://github.com/damil/Pod-POM-Web',
+       }
+     },
 );
 $builder->add_build_element($_) foreach qw/js css gif/; # items in Web/lib
 $builder->create_build_script();
