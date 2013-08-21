@@ -249,8 +249,8 @@ sub index_frameset{
 <html>
   <head><title>$title</title></head>
   <frameset cols="25%, 75%">
-    <frame name="tocFrame"     src="$ini_toc">
-    <frame name="contentFrame" src="$ini_content">
+    <frame name="tocFrame"     src="$self->{root_url}/$ini_toc">
+    <frame name="contentFrame" src="$self->{root_url}/$ini_content">
   </frameset>
 </html>
 __EOHTML__
