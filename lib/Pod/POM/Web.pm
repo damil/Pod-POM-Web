@@ -22,7 +22,7 @@ use Getopt::Long    qw/GetOptions/; # parsing options from command-line
 # globals
 #----------------------------------------------------------------------
 
-our $VERSION = '1.19';
+our $VERSION = '1.20';
 
 # some subdirs never contain Pod documentation
 my @ignore_toc_dirs = qw/auto unicore/; 
@@ -186,11 +186,9 @@ sub dispatch_request {
   # security check : no outside directories
   $path_info =~ m[(\.\.|//|\\|:)] and die "illegal path: $path_info";
 
-  $path_info =~ s[^/][] or return # $self->redirect_index;
-                                  $self->index_frameset; 
+  $path_info =~ s[^/][] or return $self->index_frameset; 
   for ($path_info) {
-    /^$/               and return # $self->redirect_index;
-                                  $self->index_frameset; 
+    /^$/               and return $self->index_frameset; 
     /^index$/          and return $self->index_frameset; 
     /^toc$/            and return $self->main_toc; 
     /^toc\/(.*)$/      and return $self->toc_for($1);   # Ajax calls
@@ -207,29 +205,6 @@ sub dispatch_request {
     #otherwise
     return $self->serve_pod($path_info);
   }
-}
-
-
-
-sub redirect_index {
-  my ($self) = @_;
-
-  return $self->send_html(<<__EOHTML__);
-<html>
-<head>
-<script>location='$self->{root_url}/index'</script>
-</head>
-<body>
-<p>
-You should have been redirected to 
-<a href='$self->{root_url}/index'>$self->{root_url}/index</a>.
-</p>
-<p>
-If this did not happen, you probably don't have Javascript enabled.
-Please enable it to take advantage of Pod::POM::Web DHTML features.
-</p>
-</body>
-__EOHTML__
 }
 
 
@@ -1452,14 +1427,10 @@ sub view_pod {
 
     # hyperlinks to various internet resources
     $module_refs = qq{<br>
-     <a href="http://search.cpan.org/perldoc/$mod_name"
-        target="_blank">CPAN</a> |
+     <a href="https://metacpan.org/pod/$mod_name"
+        target="_blank">meta::cpan</a> |
      <a href="http://www.annocpan.org/?mode=search&field=Module&name=$mod_name"
-        target="_blank">Anno</a> |
-     <a href="http://www.cpanforum.com/search/?what=modulee&name=$mod_name"
-        target="_blank">Forum</a> |
-     <a href="http://cpan.uwinnipeg.ca/search/?mode=modulee&query=$mod_name"
-        target="_blank">Kobes</a>
+        target="_blank">Anno</a>
     };
 
     if ($has_cpan) {
@@ -1892,7 +1863,7 @@ install L<AnnoCPAN::Perldoc> from CPAN;
 =item *
 
 download the database from L<http://annocpan.org/annopod.db> and save
-it as F<$HOME/.annocpan.db> (see the documentation in the above module
+it as F<$HOME/.annopod.db> (see the documentation in the above module
 for more details).  You may also like to try
 L<AnnoCPAN::Perldoc::SyncDB> which is a crontab-friendly tool for
 periodically downloading the AnnoCPAN database.
@@ -2020,7 +1991,7 @@ Laurent Dami, C<< <laurent.d...@justice.ge.ch> >>
 
 =head1 COPYRIGHT & LICENSE
 
-Copyright 2007, 2010 Laurent Dami, all rights reserved.
+Copyright 2007-2014 Laurent Dami, all rights reserved.
 
 This program is free software; you can redistribute it and/or modify it
 under the same terms as Perl itself.
@@ -2038,3 +2009,4 @@ under the same terms as Perl itself.
    - restrict to given set of paths/ modules
        - ned to change toc (no perlfunc, no scripts/pragmas, etc)
        - treenav with letter entries or not ?
+  - port to Plack
