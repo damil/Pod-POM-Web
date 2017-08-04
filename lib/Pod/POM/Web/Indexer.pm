@@ -12,7 +12,7 @@ use Search::Indexer 0.75;
 use BerkeleyDB;
 
 use parent 'Pod::POM::Web';
-our $VERSION = 1.21;
+our $VERSION = 1.22;
 
 #----------------------------------------------------------------------
 # Initializations
