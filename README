@@ -19,6 +19,10 @@ then run the following commands:
     ./Build test
     ./Build install
 
+One of the module's dependencies requires the BerkeleyDB development packages
+to be installed, so it might be necessary to install the relevant operating
+system packages before the build and test steps can run successfully.
+
 
 SUPPORT AND DOCUMENTATION
 
