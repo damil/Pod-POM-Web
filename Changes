@@ -4,7 +4,7 @@ Revision history for Pod-POM-Web
   - still some test failures due to Module::Metadata 1.000031 -- force v1.000033
 
 1.22 03.08.2017
-  - request.t failed on perl 5.24 because HTTP::Request has no version number 
+  - request.t failed on perl 5.24 because HTTP::Request has no version number
 
 1.21 30.07.2017
   - rely on Module::Metadata to parse version numbers
@@ -35,7 +35,7 @@ Revision history for Pod-POM-Web
   - CSS fix for diplaying AnnoCPAN notes
   - dependency on Pod::POM 0.25
 
-1.14 08.06.2010 
+1.14 08.06.2010
   - fix for pods/perl.pod change of structure since perl 5.12
 
 1.13
@@ -93,7 +93,7 @@ Revision history for Pod-POM-Web
   - fixed Firefox CSS bug introduced in v1.05
   - updated doc for modperl configuration
   - friendly message in /index if javascript is disabled
-        
+
 1.05    11.05.2007
   - patch from CDOLAN to add <head><title>
   - patch from CDOLAN to insert AnnoCPAN comments
@@ -108,7 +108,7 @@ Revision history for Pod-POM-Web
   - a little more help in Pod::POM::Web::Help.pod
 
 1.02    22.04.2007
-  - fixes in standalone server (thanks BooK and CDOLAN) 
+  - fixes in standalone server (thanks BooK and CDOLAN)
 
 1.01    11.03.2007
   - explicit dependency on Pod::POM 0.17
