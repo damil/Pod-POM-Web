@@ -3,6 +3,7 @@ package Pod::POM::Web; # see doc at end of file
 #======================================================================
 use strict;
 use warnings;
+use 5.008;
 no warnings 'uninitialized';
 
 use Pod::POM 0.25;                  # parsing Pod

@@ -2,6 +2,7 @@ package Pod::POM::Web::Indexer;
 
 use strict;
 use warnings;
+use 5.008;
 no warnings 'uninitialized';
 
 use Pod::POM;
