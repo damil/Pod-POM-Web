@@ -7,6 +7,13 @@ The simplest way to install the module is with cpanm:
 
     cpanm Pod::POM::Web
 
+If you want to build and install the module from source, first clone the
+repository
+
+    git clone git@github.com:damil/Pod-POM-Web.git
+
+then run the following commands:
+
     perl Build.PL
     ./Build
     ./Build test
