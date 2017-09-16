@@ -3,7 +3,9 @@ Pod-POM-Web - an HTML Perldoc server
 
 INSTALLATION
 
-To install this module, run the following commands:
+The simplest way to install the module is with cpanm:
+
+    cpanm Pod::POM::Web
 
     perl Build.PL
     ./Build
