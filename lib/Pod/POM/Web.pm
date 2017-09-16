@@ -27,7 +27,7 @@ use Module::Metadata 1.000033;      # get version number from module
 our $VERSION = '1.23';
 
 # some subdirs never contain Pod documentation
-my @ignore_toc_dirs = qw/auto unicore/; 
+my @ignore_toc_dirs = qw/auto unicore/;
 
 # filter @INC (don't want '.', nor server_root added by mod_perl)
 my $server_root = eval {Apache2::ServerUtil::server_root()} || "";
@@ -39,9 +39,9 @@ my @config_script_dirs = qw/sitescriptexp vendorscriptexp scriptdirexp/;
 my @script_dirs        = grep {$_} @Config{@config_script_dirs};
 
 # syntax coloring (optional)
-my $coloring_package 
+my $coloring_package
   = eval {require PPI::HTML}              ? "PPI"
-  : eval {require ActiveState::Scineplex} ? "SCINEPLEX" 
+  : eval {require ActiveState::Scineplex} ? "SCINEPLEX"
   : "";
 
 # fulltext indexing (optional)
@@ -51,14 +51,14 @@ my $no_indexer = eval {require Pod::POM::Web::Indexer} ? 0 : $@;
 my $has_cpan = 0; # eval {require CPAN};
 
 # A sequence of optional filters to apply to the source code before
-# running it through Pod::POM. Source code is passed in $_[0] and 
+# running it through Pod::POM. Source code is passed in $_[0] and
 # should be modified in place.
 my @podfilters = (
 
-  # AnnoCPAN must be first in the filter list because 
+  # AnnoCPAN must be first in the filter list because
   # it uses the MD5 of the original source
-  eval {require AnnoCPAN::Perldoc::Filter} 
-    ? sub {$_[0] = AnnoCPAN::Perldoc::Filter->new->filter($_[0])} 
+  eval {require AnnoCPAN::Perldoc::Filter}
+    ? sub {$_[0] = AnnoCPAN::Perldoc::Filter->new->filter($_[0])}
     : (),
 
   # Pod::POM fails to parse correctly when there is an initial blank line
@@ -83,7 +83,7 @@ sub import {
   my ($package, $filename) = caller;
 
   no strict 'refs';
-  *{'main::server'} = sub {$class->server(@_)} 
+  *{'main::server'} = sub {$class->server(@_)}
     if $package eq 'main' and $filename eq '-e';
 }
 
@@ -125,16 +125,16 @@ sub _options_from_cmd_line {
 
 
 sub handler : method  {
-  my ($class, $request, $response, $options) = @_; 
+  my ($class, $request, $response, $options) = @_;
   my $self = $class->new($request, $response, $options);
   eval { $self->dispatch_request(); 1}
-    or $self->send_content({content => $@, code => 500});  
+    or $self->send_content({content => $@, code => 500});
   return 0; # Apache2::Const::OK;
 }
 
 
 sub new  {
-  my ($class, $request, $response, $options) = @_; 
+  my ($class, $request, $response, $options) = @_;
   $options ||= {};
   my $self = {%$options};
 
@@ -181,18 +181,18 @@ sub new  {
 
 
 
-sub dispatch_request { 
+sub dispatch_request {
   my ($self) = @_;
   my $path_info = $self->{path};
 
   # security check : no outside directories
   $path_info =~ m[(\.\.|//|\\|:)] and die "illegal path: $path_info";
 
-  $path_info =~ s[^/][] or return $self->index_frameset; 
+  $path_info =~ s[^/][] or return $self->index_frameset;
   for ($path_info) {
-    /^$/               and return $self->index_frameset; 
-    /^index$/          and return $self->index_frameset; 
-    /^toc$/            and return $self->main_toc; 
+    /^$/               and return $self->index_frameset;
+    /^index$/          and return $self->index_frameset;
+    /^toc$/            and return $self->main_toc;
     /^toc\/(.*)$/      and return $self->toc_for($1);   # Ajax calls
     /^script\/(.*)$/   and return $self->serve_script($1);
     /^search$/         and return $self->dispatch_search;
@@ -201,7 +201,7 @@ sub dispatch_request {
     # for debugging
     /^_dirs$/          and return $self->send_html(join "<br>", @search_dirs);
 
-    # file extension : passthrough 
+    # file extension : passthrough
     /\.(\w+)$/         and return $self->serve_file($path_info, $1);
 
     #otherwise
@@ -288,7 +288,7 @@ __EOHTML__
   <title>Source of $path</title>
   <link href="$self->{root_url}/Alien/GvaScript/lib/GvaScript.css" rel="stylesheet" type="text/css">
   <link href="$self->{root_url}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
-  <style> 
+  <style>
     PRE {border: none; background: none}
     FORM {float: right; font-size: 70%; border: 1px solid}
   </style>
@@ -332,11 +332,11 @@ sub serve_pod {
   my @sources = $self->find_source($path) or die "No file for '$path'";
   my $mtime   = max map {(stat $_)[9]} @sources;
   my $content = $path =~ /\bperltoc\b/
-                   ? $self->fake_perltoc 
+                   ? $self->fake_perltoc
                    : $self->slurp_file($sources[0], ":crlf");
 
   (my $mod_name = $path) =~ s[/][::]g;
-  my $version = @sources > 1 
+  my $version = @sources > 1
     ? $self->parse_version($self->slurp_file($sources[-1], ":crlf"), $mod_name)
     : $self->parse_version($content, $mod_name);
 
@@ -345,7 +345,7 @@ sub serve_pod {
   }
 
   # special handling for perlfunc: change initial C<..> to hyperlinks
-  if ($path =~ /\bperlfunc$/) { 
+  if ($path =~ /\bperlfunc$/) {
     my $sub = sub {my $txt = shift; $txt =~ s[C<(.*?)>][C<L</$1>>]g; $txt};
     $content =~ s[(Perl Functions by Category)(.*?)(Alphabetical Listing)]
                  [$1 . $sub->($2) . $3]es;
@@ -362,12 +362,12 @@ sub serve_pod {
   my $html = $view->print($pom);
 
   # again special handling for perlfunc : ids should be just function names
-  if ($path =~ /\bperlfunc$/) { 
+  if ($path =~ /\bperlfunc$/) {
     $html =~ s/li id="(.*?)_.*?"/li id="$1"/g;
   }
 
   # special handling for 'perl' : hyperlinks to man pages
-  if ($path =~ /\bperl$/) { 
+  if ($path =~ /\bperl$/) {
     my $sub = sub {my $txt = shift;
                    $txt =~ s[(perl\w+)]
                             [<a href="$self->{root_url}/$1">$1</a>]g;
@@ -439,8 +439,8 @@ sub find_source {
 
   # otherwise, serving a module
   foreach my $prefix (@search_dirs) {
-    my @found = grep  {-f} ("$prefix/$path.pod", 
-                            "$prefix/$path.pm", 
+    my @found = grep  {-f} ("$prefix/$path.pod",
+                            "$prefix/$path.pm",
                             "$prefix/pod/$path.pod",
                             "$prefix/pods/$path.pod");
     return @found if @found;
@@ -471,7 +471,7 @@ sub toc_for { # partial toc (called through Ajax)
   my ($self, $prefix) = @_;
 
   # special handling for builtin paths
-  for ($prefix) { 
+  for ($prefix) {
     /^perldocs$/ and return $self->toc_perldocs;
     /^pragmas$/  and return $self->toc_pragmas;
     /^scripts$/  and return $self->toc_scripts;
@@ -511,7 +511,7 @@ sub toc_pragmas {
   my ($self) = @_;
 
   my $entries  = $self->find_entries_for("");    # files found at root level
-  delete $entries->{$_} for @ignore_toc_dirs, qw/pod pods inc/; 
+  delete $entries->{$_} for @ignore_toc_dirs, qw/pod pods inc/;
   delete $entries->{$_} for grep {/^perl/ or !/^[[:lower:]]/} keys %$entries;
 
   return $self->send_html($self->htmlize_entries($entries));
@@ -612,20 +612,20 @@ sub htmlize_perldocs {
     while ($content =~ /^\s*(perl\S*?)\s*\t(.+)/gm) {
       my ($ref, $descr) = ($1, $2);
       my $entry = delete $perldocs->{$ref} or next;
-      push @leaves, {label => $ref, 
+      push @leaves, {label => $ref,
                      href  => $entry->{node},
                      attrs => qq{id='$ref' title='$descr'}};
     }
     # sort and transform into HTML
-    @leaves = map {leaf(%$_)} 
+    @leaves = map {leaf(%$_)}
               sort {$a->{label} cmp $b->{label}} @leaves;
-    $html .= closed_node(label   => $title, 
+    $html .= closed_node(label   => $title,
                          content => join("\n", @leaves));
   }
 
   # maybe some remaining pages
   if (keys %$perldocs) {
-    $html .= closed_node(label   => 'Unclassified', 
+    $html .= closed_node(label   => 'Unclassified',
                          content => $self->htmlize_entries($perldocs));
   }
 
@@ -642,7 +642,7 @@ sub htmlize_entries {
     my $entry = $entries->{$name};
     (my $id = $entry->{node}) =~ s[/][::]g;
     my %args = (class => 'TN_leaf',
-                label => $name, 
+                label => $name,
                 attrs => qq{id='$id'});
     if ($entry->{dir}) {
       $args{class}  = 'TN_node TN_closed';
@@ -664,7 +664,7 @@ sub get_abstract {
 
 
 
-sub main_toc { 
+sub main_toc {
   my ($self) = @_;
 
   # initial page to open
@@ -708,9 +708,9 @@ sub main_toc {
 <html>
 <head>
   <base target="contentFrame">
-  <link href="$self->{root_url}/Alien/GvaScript/lib/GvaScript.css" 
+  <link href="$self->{root_url}/Alien/GvaScript/lib/GvaScript.css"
         rel="stylesheet" type="text/css">
-  <link href="$self->{root_url}/Pod/POM/Web/lib/PodPomWeb.css" 
+  <link href="$self->{root_url}/Pod/POM/Web/lib/PodPomWeb.css"
         rel="stylesheet" type="text/css">
   <script src="$self->{root_url}/Alien/GvaScript/lib/prototype.js"></script>
   <script src="$self->{root_url}/Alien/GvaScript/lib/GvaScript.js"></script>
@@ -729,7 +729,7 @@ sub main_toc {
       // compute available height -- comes either from body or documentElement,
       // depending on browser and on compatibility mode !!
       var doc_el_height = document.documentElement.clientHeight;
-      var avail_height 
+      var avail_height
         = (Prototype.Browser.IE && doc_el_height) ? doc_el_height
                                                   : document.body.clientHeight;
 
@@ -747,14 +747,14 @@ sub main_toc {
       first_node = rest.shift();
 
       // build a handler for "onAfterLoadContent" (closure on first_node/rest)
-      var open_or_select_next = function() { 
+      var open_or_select_next = function() {
 
         // delete handler that might have been placed by previous call
         delete treeNavigator.onAfterLoadContent;
 
-        // 
+        //
         if (rest.length > 0) {
-          open_nodes(first_node, rest) 
+          open_nodes(first_node, rest)
         }
         else {
           treeNavigator.openEnclosingNodes(\$(first_node));
@@ -771,7 +771,7 @@ sub main_toc {
         treeNavigator.onAfterLoadContent = open_or_select_next;
         treeNavigator.open(node);
       }
-      // otherwise just a direct call 
+      // otherwise just a direct call
       else {
         open_or_select_next();
       }
@@ -784,14 +784,14 @@ sub main_toc {
       // build array of intermediate nodes (i.e "Foo", "Foo::Bar", etc.)
       var parts = entry.split(new RegExp("/|::"));
       var accu = '';
-      var sequence = parts.map(function(e) { 
+      var sequence = parts.map(function(e) {
          accu = accu ? (accu + "::" + e) : e;
          return accu;
         });
 
       // choose id of first_node by analysis of entry
       var initial = entry.substr(0, 1);
-      var first_node  
+      var first_node
 
         // CASE module (starting with uppercase)
         = (initial <= 'Z')           ? (initial + ":")
@@ -809,28 +809,28 @@ sub main_toc {
 
     function setup() {
 
-      treeNavigator 
+      treeNavigator
         = new GvaScript.TreeNavigator('TN_tree', {tabIndex:-1});
 
       completers.perlfunc = new GvaScript.AutoCompleter(
-             perlfuncs, 
-             {minimumChars: 1, 
-              minWidth: 100, 
-              offsetX: -20, 
+             perlfuncs,
+             {minimumChars: 1,
+              minWidth: 100,
+              offsetX: -20,
               autoSuggestDelay: 400});
       completers.perlfunc.onComplete = submit_on_event;
 
       completers.perlvar = new GvaScript.AutoCompleter(
-             perlvars, 
-             {minimumChars: 1, 
-              minWidth: 100, 
-              offsetX: -20, 
+             perlvars,
+             {minimumChars: 1,
+              minWidth: 100,
+              offsetX: -20,
               autoSuggestDelay: 400});
       completers.perlvar.onComplete = submit_on_event;
 
       if (!no_indexer) {
         completers.modlist  = new GvaScript.AutoCompleter(
-             "search?source=modlist&search=", 
+             "search?source=modlist&search=",
              {minimumChars: 2, minWidth: 100, offsetX: -20, typeAhead: false});
         completers.modlist.onComplete = submit_on_event;
       }
@@ -840,7 +840,7 @@ sub main_toc {
     }
 
     document.observe('dom:loaded', setup);
-    window.onresize = resize_tree_navigator; 
+    window.onresize = resize_tree_navigator;
     // Note: observe('resize') doesn't work. Why ?
 
     function displayContent(event) {
@@ -859,7 +859,7 @@ sub main_toc {
        case 0: completers.perlfunc.autocomplete(input); break;
        case 1: completers.perlvar.autocomplete(input); break;
        case 3: if (!no_indexer)
-                 completers.modlist.autocomplete(input); 
+                 completers.modlist.autocomplete(input);
                break;
      }
    }
@@ -869,7 +869,7 @@ sub main_toc {
   <style>
    .small_title {color: midnightblue; font-weight: bold; padding: 0 3 0 3}
    FORM     {margin:0px}
-   BODY     {margin:0px; font-size: 70%; overflow-x: hidden} 
+   BODY     {margin:0px; font-size: 70%; overflow-x: hidden}
    DIV      {margin:0px; width: 100%}
    #TN_tree {overflow-y:scroll; overflow-x: hidden}
   </style>
@@ -877,7 +877,7 @@ sub main_toc {
 <body>
 
 <div id='toc_frame_top'>
-<div class="small_title" 
+<div class="small_title"
      style="text-align:center;border-bottom: 1px solid">
 Perl Documentation
 </div>
@@ -894,7 +894,7 @@ Perl Documentation
       <option>modules</option>
       <option>fulltext</option>
      </select><br>
-<span class="small_title">&nbsp;for&nbsp;</span><input 
+<span class="small_title">&nbsp;for&nbsp;</span><input
          name="search" size="15"
          autocomplete="off"
          onfocus="maybe_complete(this)">
@@ -904,7 +904,7 @@ Perl Documentation
      style="border-bottom: 1px solid">Browse</div>
 </div>
 
-<!-- In principle the tree navigator below would best belong in a 
+<!-- In principle the tree navigator below would best belong in a
      different frame, but instead it's in a div because the autocompleter
      from the form above sometimes needs to overlap the tree nav. -->
 <div id='TN_tree' onPing='displayContent'>
@@ -955,7 +955,7 @@ sub perlfunc_items {
       or die "'perlfunc.pod' does not seem to be installed on this system";
     my $funcpom   = $self->pod2pom($funcpod);
     my ($description) = grep {$_->title eq 'DESCRIPTION'} $funcpom->head1;
-    my ($alphalist)   
+    my ($alphalist)
       = grep {$_->title =~ /^Alphabetical Listing/i} $description->head2;
     @_perlfunc_items = $alphalist->over->[0]->item;
   };
@@ -1049,7 +1049,7 @@ sub perlfaq {
 
   my $view = $self->mk_view(path => "perlfaq/$faq_entry");
 
- FAQ: 
+ FAQ:
   for my $num (1..9) {
     my $faq = "perlfaq$num";
     my ($faqpod) = $self->find_source($faq)
@@ -1073,7 +1073,7 @@ sub perlfaq {
   <script src="$self->{root_url}/Alien/GvaScript/lib/GvaScript.js"></script>
   <script>
     var treeNavigator;
-    function setup() {  
+    function setup() {
       treeNavigator = new GvaScript.TreeNavigator('TN_tree');
     }
     window.onload = setup;
@@ -1175,7 +1175,7 @@ sub generic_node {
   $args{attrs}       &&= " $args{attrs}";
   $args{content}     ||= "";
   $args{content}     &&= qq{<div class="TN_content">$args{content}</div>};
-  my ($default_label_tag, $label_attrs) 
+  my ($default_label_tag, $label_attrs)
     = $args{href} ? ("a",    qq{ href='$args{href}'})
                   : ("span", ""                     );
   $args{label_tag}   ||= $default_label_tag;
@@ -1274,7 +1274,7 @@ sub view_seq_text {
 
 
 # SUPER::view_seq_link needs some adaptations
-sub view_seq_link { 
+sub view_seq_link {
     my ($self, $link) = @_;
 
     # we handle the L<link_text|...> syntax here, because we also want
@@ -1293,7 +1293,7 @@ sub view_seq_link {
     $url =~ s[#(.*)]['#' . _title_to_id($1)]e unless $is_external_resource;
 
     # if explicit link_text given by client, take that as label, unchanged
-    if ($link_text) { 
+    if ($link_text) {
       $label = $link_text;
     }
     # if "$page/$section", replace by "$section in $page"
@@ -1319,7 +1319,7 @@ sub view_item {
   my ($self, $item) = @_;
 
   my $title = eval {$item->title->present($self)} || "";
-     $title = "" if $title =~ /^\s*\*\s*$/; 
+     $title = "" if $title =~ /^\s*\*\s*$/;
 
   my $class = "";
   my $id    = "";
@@ -1374,12 +1374,12 @@ sub view_pod {
     = ("") x 6;
   if (my $mod_name = $self->{mod_name}) {
 
-    # version 
-    $version = $self->{version} ? "v. $self->{version}, " : ""; 
+    # version
+    $version = $self->{version} ? "v. $self->{version}, " : "";
 
     # is this module in Perl core ?
     $core_release = Module::CoreList->first_release($mod_name) || "";
-    $orig_version 
+    $orig_version
       = $Module::CoreList::version{$core_release}{$mod_name} || "";
     $orig_version &&= "v. $orig_version ";
     $core_release &&= "; ${orig_version}entered Perl core in $core_release";
@@ -1396,13 +1396,13 @@ sub view_pod {
       my $mod = CPAN::Shell->expand("Module", $mod_name);
       if ($mod) {
         my $cpan_version = $mod->cpan_version;
-        $cpan_info = "; CPAN has v. $cpan_version" 
+        $cpan_info = "; CPAN has v. $cpan_version"
           if $cpan_version ne $self->{version};
       }
     }
   }
 
-  my $toc = $self->make_toc($pom, 0); 
+  my $toc = $self->make_toc($pom, 0);
 
   return <<__EOHTML__
 <html>
@@ -1414,9 +1414,9 @@ sub view_pod {
   <script src="$self->{root_url}/Alien/GvaScript/lib/GvaScript.js"></script>
   <script>
     var treeNavigator;
-    function setup() {  
+    function setup() {
       new GvaScript.TreeNavigator(
-         'TN_tree', 
+         'TN_tree',
          {selectFirstNode: (location.hash ? false : true),
           tabIndex: 0}
       );
@@ -1442,14 +1442,14 @@ sub view_pod {
 
     #ref_box {
       clear: right;
-      float: right; 
-      text-align: right; 
+      float: right;
+      text-align: right;
       font-size: 80%;
     }
     #title_descr {
        clear: right;
-       float: right; 
-       font-style: italic; 
+       float: right;
+       font-style: italic;
        margin-top: 8px;
        margin-bottom: 8px;
        padding: 5px;
@@ -1550,7 +1550,7 @@ sub PPI_coloring {
   my $ppi = PPI::HTML->new();
   my $html = $ppi->html(\$text);
 
-  if ($html) { 
+  if ($html) {
     $html =~ s/<br>//g;
     return $html;
   }
@@ -1564,8 +1564,8 @@ sub PPI_coloring {
 sub SCINEPLEX_coloring {
   my ($self, $text) = @_;
   eval {
-    $text = ActiveState::Scineplex::Annotate($text, 
-                                             'perl', 
+    $text = ActiveState::Scineplex::Annotate($text,
+                                             'perl',
                                              outputFormat => 'html');
   };
   return $text;
@@ -1619,11 +1619,11 @@ Pod::POM::Web - HTML Perldoc server
 
 L<Pod::POM::Web> is a Web application for browsing
 the documentation of Perl components installed
-on your local machine. Since pages are dynamically 
+on your local machine. Since pages are dynamically
 generated, they are always in sync with code actually
-installed. 
+installed.
 
-The application offers 
+The application offers
 
 =over
 
@@ -1684,7 +1684,7 @@ Explorer 8.0, Firefox 3.5, Google Chrome 3.0 and Safari 4.0.4.
 
 =head1 USAGE
 
-Usage is described in a separate document 
+Usage is described in a separate document
 L<Pod::POM::Web::Help>.
 
 =head1 INSTALLATION
@@ -1697,7 +1697,7 @@ the web server :
 
 =head3 As a mod_perl service
 
-If you have Apache2 with mod_perl 2.0, then edit your 
+If you have Apache2 with mod_perl 2.0, then edit your
 F<perl.conf> as follows :
 
   PerlModule Apache2::RequestRec
@@ -1709,7 +1709,7 @@ F<perl.conf> as follows :
 
 Then navigate to URL L<http://localhost/perldoc>.
 
-=head3 As a cgi-bin script 
+=head3 As a cgi-bin script
 
 Alternatively, you can run this application as a cgi-script
 by writing a simple file F<perldoc> in your C<cgi-bin> directory,
@@ -1719,7 +1719,7 @@ containing :
   use Pod::POM::Web;
   Pod::POM::Web->handler;
 
-Make this script executable, 
+Make this script executable,
 then navigate to URL L<http://localhost/cgi-bin/perldoc>.
 
 The same can be done for running under mod_perl Registry
@@ -1765,8 +1765,8 @@ want them to have distinct titles. This can be done like this:
 
 =head2 Note about security
 
-This application is intended as a power tool for Perl developers, 
-not as an Internet application. It will give access to any file 
+This application is intended as a power tool for Perl developers,
+not as an Internet application. It will give access to any file
 installed under your C<@INC> path or Apache C<lib/perl> directory
 (but not outside of those directories);
 so it is probably a B<bad idea>
@@ -1778,8 +1778,8 @@ to put it on a public Internet server.
 =head3 Syntax coloring
 
 Syntax coloring improves readability of code excerpts.
-If your Perl distribution is from ActiveState, then 
-C<Pod::POM::Web> will take advantage 
+If your Perl distribution is from ActiveState, then
+C<Pod::POM::Web> will take advantage
 of the L<ActiveState::Scineplex> module
 which is already installed on your system. Otherwise,
 you need to install L<PPI::HTML>, available from CPAN.
@@ -1787,8 +1787,8 @@ you need to install L<PPI::HTML>, available from CPAN.
 =head3 Fulltext indexing
 
 C<Pod::POM::Web> can index the documentation and source code
-of all your installed modules, including Perl variable names, 
-C<Names:::Of::Modules>, etc. To use this feature you need to 
+of all your installed modules, including Perl variable names,
+C<Names:::Of::Modules>, etc. To use this feature you need to
 
 =over
 
@@ -1834,21 +1834,21 @@ periodically downloading the AnnoCPAN database.
 
 =head2 Images
 
-The Pod::Pom::Web server also serves non-pod files within the C<@INC> 
-hierarchy. This is useful for example to include images in your 
-documentation, by inserting chunks of HTML as follows : 
+The Pod::Pom::Web server also serves non-pod files within the C<@INC>
+hierarchy. This is useful for example to include images in your
+documentation, by inserting chunks of HTML as follows :
 
   =for html
     <img src="pretty_diagram.jpg">
 
-or 
+or
 
   =for html
     <object type="image/svg+xml" data="try.svg" width="640" height="480">
     </object>
 
-Here it is assumed that auxiliary files C<pretty_diagram.jpg> or 
-C<try.svg> are in the same directory than the POD source; but 
+Here it is assumed that auxiliary files C<pretty_diagram.jpg> or
+C<try.svg> are in the same directory than the POD source; but
 of course relative or absolute links can be used.
 
 
@@ -1892,7 +1892,7 @@ This web application was deeply inspired by :
 
 =item *
 
-the structure of HTML Perl documentation released with 
+the structure of HTML Perl documentation released with
 ActivePerl (L<http://www.activeperl.com/ASPN/Perl>).
 
 
@@ -1911,11 +1911,11 @@ the wide possibilities of Andy Wardley's L<Pod::POM> parser.
 
 =back
 
-Thanks 
-to Philippe Bruhat who mentioned a weakness in the API, 
-to Chris Dolan who supplied many useful suggestions and patches 
-(esp. integration with AnnoCPAN), 
-to Rémi Pauchet who pointed out a regression bug with Firefox CSS, 
+Thanks
+to Philippe Bruhat who mentioned a weakness in the API,
+to Chris Dolan who supplied many useful suggestions and patches
+(esp. integration with AnnoCPAN),
+to Rémi Pauchet who pointed out a regression bug with Firefox CSS,
 to Alexandre Jousset who fixed a bug in the TOC display,
 to Cédric Bouvier who pointed out a IO bug in serving binary files,
 to Elliot Shank who contributed the "page_title" option,
@@ -1924,11 +1924,11 @@ and to Olivier 'dolmen' Mengué who suggested to export "server" into C<main::>.
 
 =head1 RELEASE NOTES
 
-Indexed information since version 1.04 is not compatible 
+Indexed information since version 1.04 is not compatible
 with previous versions.
 
-So if you upgraded from a previous version and want to use 
-the index, you need to rebuild it entirely, by running the 
+So if you upgraded from a previous version and want to use
+the index, you need to rebuild it entirely, by running the
 command :
 
   perl -MPod::POM::Web::Indexer -e "index(-from_scratch => 1)"
@@ -1960,8 +1960,8 @@ under the same terms as Perl itself.
   - real tests !
   - factorization (esp. initial <head> in html pages)
   - use Getopts to choose colouring package, toggle CPAN, etc.
-  - declare Pod::POM bugs 
-      - perlre : line 1693 improper parsing of L<C<< (?>pattern) >>> 
+  - declare Pod::POM bugs
+      - perlre : line 1693 improper parsing of L<C<< (?>pattern) >>>
    - bug: doc files taken as pragmas (lwptut, lwpcook, pip, pler)
    - exploit doc index X<...>
    - do something with perllocal (installation history)
