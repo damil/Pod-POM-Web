@@ -35,6 +35,9 @@ You can also look for information at:
     Search CPAN
         http://search.cpan.org/dist/Pod-POM-Web
 
+    MetaCPAN
+        https://metacpan.org/pod/Pod::POM::Web
+
     CPAN Request Tracker:
         http://rt.cpan.org/NoAuth/Bugs.html?Dist=Pod-POM-Web
 
@@ -43,6 +46,7 @@ You can also look for information at:
 
     CPAN Ratings:
         http://cpanratings.perl.org/d/Pod-POM-Web
+
 
 COPYRIGHT AND LICENCE
 
