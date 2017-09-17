@@ -426,7 +426,7 @@ __END__
 
 =head1 NAME
 
-Pod::POM::Web::Indexer - fulltext search for Pod::POM::Web
+Pod::POM::Web::Indexer - full-text search for Pod::POM::Web
 
 =head1 SYNOPSIS
 
@@ -434,7 +434,7 @@ Pod::POM::Web::Indexer - fulltext search for Pod::POM::Web
 
 =head1 DESCRIPTION
 
-Adds fulltext search capabilities to the 
+Adds full-text search capabilities to the 
 L<Pod::POM::Web|Pod::POM::Web> application.
 This requires L<Search::Indexer|Search::Indexer> to be installed.
 

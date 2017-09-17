@@ -43,7 +43,7 @@ my $coloring_package
   : eval {require ActiveState::Scineplex} ? "SCINEPLEX" 
   : "";
 
-# fulltext indexing (optional)
+# full-text indexing (optional)
 my $no_indexer = eval {require Pod::POM::Web::Indexer} ? 0 : $@;
 
 # CPAN latest version info (tentative, but disabled because CPAN is too slow)
@@ -1653,7 +1653,7 @@ search through L<perlfaq> headers
 
 =item *
 
-fulltext search, including names of Perl variables
+full-text search, including names of Perl variables
 (this is an optional feature -- see section L</"Optional features">).
 
 =item *
