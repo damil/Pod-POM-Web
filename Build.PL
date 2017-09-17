@@ -10,6 +10,7 @@ my $builder = Module::Build->new(
     requires => {
       'parent'               => 0,
       'Alien::GvaScript'     => 1.021000,
+      'BerkeleyDB'           => 0,
       'Pod::POM'             => 0.25,
       'Pod::POM::View::HTML' => 0,
       'List::Util'           => 0,
