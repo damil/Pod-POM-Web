@@ -1965,6 +1965,6 @@ under the same terms as Perl itself.
    - exploit doc index X<...>
    - do something with perllocal (installation history)
    - restrict to given set of paths/ modules
-       - ned to change toc (no perlfunc, no scripts/pragmas, etc)
+       - need to change toc (no perlfunc, no scripts/pragmas, etc)
        - treenav with letter entries or not ?
   - port to Plack

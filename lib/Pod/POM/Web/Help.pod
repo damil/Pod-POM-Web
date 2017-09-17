@@ -66,7 +66,7 @@ with some contextual excerpts of the matching words.
 =head2 Browsing
 
 The browsing tree starts with two sections B<Perl docs> and
-B<Pragmas>, containg core Perl documentation. The third section
+B<Pragmas>, containing core Perl documentation. The third section
 B<Scripts> reflects the structure of Perl scripts installed in 
 C<perl/bin>. The fourth section 
 B<Modules> reflects the structure of installed modules on the local
