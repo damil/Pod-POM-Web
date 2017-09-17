@@ -1,5 +1,8 @@
 #!perl
 
+use strict;
+use warnings;
+
 use Test::More tests => 11;
 use HTTP::Request;
 use HTTP::Response;
