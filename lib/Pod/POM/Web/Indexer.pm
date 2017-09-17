@@ -439,7 +439,7 @@ L<Pod::POM::Web|Pod::POM::Web> application.
 This requires L<Search::Indexer|Search::Indexer> to be installed.
 
 Queries may include plain terms, "exact phrases", 
-'+' or '-' prefixes, boolean operators and parentheses.
+'+' or '-' prefixes, Boolean operators and parentheses.
 See L<Search::QueryParser|Search::QueryParser> for details.
 
 
