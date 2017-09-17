@@ -1208,7 +1208,7 @@ sub leaf {
 
 sub slurp_file {
   my ($self, $file, $io_layer) = @_;
-  open my $fh, $file or die "open $file: $!";
+  open my $fh, "<", $file or die "open $file: $!";
   binmode($fh, $io_layer) if $io_layer;
   local $/ = undef;
   return <$fh>;
