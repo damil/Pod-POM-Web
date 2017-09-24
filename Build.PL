@@ -11,6 +11,7 @@ my $builder = Module::Build->new(
       'perl'                 => 5.008,
       'parent'               => 0,
       'Alien::GvaScript'     => 1.021000,
+      'BerkeleyDB'           => 0,
       'Pod::POM'             => 0.25,
       'Pod::POM::View::HTML' => 0,
       'List::Util'           => 0,
@@ -32,7 +33,9 @@ my $builder = Module::Build->new(
       'AnnoCPAN::Perldoc::Filter' => 0,
     },
     build_requires => {
-      'Test::More' => 0,
+      'Test::More'     => 0,
+      'HTTP::Request'  => 0,
+      'HTTP::Response' => 0,
     },
     add_to_cleanup      => [ 'Pod-POM-Web-*' ],
     meta_merge => {
