@@ -44,7 +44,7 @@ my $coloring_package
   : eval {require ActiveState::Scineplex} ? "SCINEPLEX"
   : "";
 
-# fulltext indexing (optional)
+# full-text indexing (optional)
 my $no_indexer = eval {require Pod::POM::Web::Indexer} ? 0 : $@;
 
 # CPAN latest version info (tentative, but disabled because CPAN is too slow)
@@ -1654,7 +1654,7 @@ search through L<perlfaq> headers
 
 =item *
 
-fulltext search, including names of Perl variables
+full-text search, including names of Perl variables
 (this is an optional feature -- see section L</"Optional features">).
 
 =item *
@@ -1966,6 +1966,6 @@ under the same terms as Perl itself.
    - exploit doc index X<...>
    - do something with perllocal (installation history)
    - restrict to given set of paths/ modules
-       - ned to change toc (no perlfunc, no scripts/pragmas, etc)
+       - need to change toc (no perlfunc, no scripts/pragmas, etc)
        - treenav with letter entries or not ?
   - port to Plack
