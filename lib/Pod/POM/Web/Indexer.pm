@@ -86,7 +86,7 @@ my @stopwords = (
 #----------------------------------------------------------------------
 
 
-sub fulltext {
+sub full_text {
   my ($self, $search_string) = @_;
 
   my $indexer = eval {
@@ -95,7 +95,7 @@ sub fulltext {
                         preMatch  => '[[',
                         postMatch => ']]');
   } or die <<__EOHTML__;
-No fulltext index found ($@).
+No full-text index found ($@).
 <p>
 Please ask your system administrator to run the
 command
@@ -142,7 +142,7 @@ __EOHTML__
 
   my $nav_links = $self->paginate_results(\@doc_ids);
 
-  $html .= "<b>Fulltext search</b> for '$search_string'$killedWords<br>"
+  $html .= "<b>Full-text search</b> for '$search_string'$killedWords<br>"
          . "$nav_links<hr>\n";
 
   $self->_tie_docs(DB_RDONLY);
@@ -186,7 +186,7 @@ sub paginate_results {
   @$doc_ids_ref    = @$doc_ids_ref[$start_record ... $end_record];
   my $prev_idx     = max($start_record - $count, 0);
   my $next_idx     = $start_record + $count;
-  my $base_url     = "?source=fulltext&search=$self->{params}{search}";
+  my $base_url     = "?source=full_text&search=$self->{params}{search}";
   my $prev_link
     = $start_record > 0 ? uri_escape("$base_url&start=$prev_idx") : "";
   my $next_link
@@ -427,7 +427,7 @@ __END__
 
 =head1 NAME
 
-Pod::POM::Web::Indexer - fulltext search for Pod::POM::Web
+Pod::POM::Web::Indexer - full-text search for Pod::POM::Web
 
 =head1 SYNOPSIS
 
@@ -435,12 +435,12 @@ Pod::POM::Web::Indexer - fulltext search for Pod::POM::Web
 
 =head1 DESCRIPTION
 
-Adds fulltext search capabilities to the
+Adds full-text search capabilities to the
 L<Pod::POM::Web|Pod::POM::Web> application.
 This requires L<Search::Indexer|Search::Indexer> to be installed.
 
 Queries may include plain terms, "exact phrases",
-'+' or '-' prefixes, boolean operators and parentheses.
+'+' or '-' prefixes, Boolean operators and parentheses.
 See L<Search::QueryParser|Search::QueryParser> for details.
 
 

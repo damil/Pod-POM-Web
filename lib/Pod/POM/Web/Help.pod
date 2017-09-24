@@ -54,7 +54,7 @@ This only works if the local Perl installation was indexed
 (see L<Pod::POM::Web::Indexer> on how to do it).
 In that case, the input field can contain
 one or several words, possibly connected
-by boolean operators (L<Search::QueryParser>).
+by Boolean operators (L<Search::QueryParser>).
 The answer will be a list of modules that
 match that query, either in the documentation
 or in the source code. Each module is presented
@@ -66,7 +66,7 @@ with some contextual excerpts of the matching words.
 =head2 Browsing
 
 The browsing tree starts with two sections B<Perl docs> and
-B<Pragmas>, containg core Perl documentation. The third section
+B<Pragmas>, containing core Perl documentation. The third section
 B<Scripts> reflects the structure of Perl scripts installed in
 C<perl/bin>. The fourth section
 B<Modules> reflects the structure of installed modules on the local

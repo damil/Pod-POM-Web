@@ -44,7 +44,7 @@ my $coloring_package
   : eval {require ActiveState::Scineplex} ? "SCINEPLEX"
   : "";
 
-# fulltext indexing (optional)
+# full-text indexing (optional)
 my $no_indexer = eval {require Pod::POM::Web::Indexer} ? 0 : $@;
 
 # CPAN latest version info (tentative, but disabled because CPAN is too slow)
@@ -892,7 +892,7 @@ Perl Documentation
       <option>perlvar</option>
       <option>perlfaq</option>
       <option>modules</option>
-      <option>fulltext</option>
+      <option>full-text</option>
      </select><br>
 <span class="small_title">&nbsp;for&nbsp;</span><input
          name="search" size="15"
@@ -930,11 +930,11 @@ sub dispatch_search {
                 perlvar       => 'perlvar',
                 perlfaq       => 'perlfaq',
                 modules       => 'serve_pod',
-                fulltext      => 'fulltext',
+                full_text     => 'full_text',
                 modlist       => 'modlist',
                 }->{$source}  or die "cannot search in '$source'";
 
-  if ($method =~ /fulltext|modlist/ and $no_indexer) {
+  if ($method =~ /full_text|modlist/ and $no_indexer) {
     die "<p>this method requires <b>Search::Indexer</b></p>"
       . "<p>please ask your system administrator to install it</p>"
       . "(<small>error message : $no_indexer</small>)";
@@ -1654,7 +1654,7 @@ search through L<perlfaq> headers
 
 =item *
 
-fulltext search, including names of Perl variables
+full-text search, including names of Perl variables
 (this is an optional feature -- see section L</"Optional features">).
 
 =item *
@@ -1784,7 +1784,7 @@ of the L<ActiveState::Scineplex> module
 which is already installed on your system. Otherwise,
 you need to install L<PPI::HTML>, available from CPAN.
 
-=head3 Fulltext indexing
+=head3 Full-text indexing
 
 C<Pod::POM::Web> can index the documentation and source code
 of all your installed modules, including Perl variable names,
@@ -1966,6 +1966,6 @@ under the same terms as Perl itself.
    - exploit doc index X<...>
    - do something with perllocal (installation history)
    - restrict to given set of paths/ modules
-       - ned to change toc (no perlfunc, no scripts/pragmas, etc)
+       - need to change toc (no perlfunc, no scripts/pragmas, etc)
        - treenav with letter entries or not ?
   - port to Plack
