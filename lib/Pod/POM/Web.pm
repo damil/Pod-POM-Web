@@ -128,41 +128,47 @@ sub handler : method  {
   my ($class, $request, $response, $options) = @_;
   my $self = $class->new($request, $response, $options);
 
-  eval { $self->dispatch_request(); 1};
-  if ($@) {
+  eval { $self->dispatch_request(); 1}
+    or do {
       my $error = $@;
       if ($error =~ /No file for '(.*)'/) {
-	  my $colons = $1;
-	  $colons =~ s!/!::!g;
-	  $colons =~ s/([&<>"])/$Pod::POM::Web::escape_entity{$1}/g;
-	  $self->send_content({content => <<__EOHTML__, code => 403});  
-<html>
-<head>
-<title>
-$colons not found
-</title>
-</head>
-<body>
-<h1>$colons not found</h1>
-<p>
-A module <code>$colons</code> could not be found on this server. It may not be installed locally. Please try the following links.
-</p>
-<ul>
-<li>
-<a href='https://metacpan.org/pod/$colons'>$colons on Metacpan</a>
-</li>
-</ul>
-</body>
-</html>
-__EOHTML__
+        $self->send_content({content => $self->_no_such_module($1),
+                             code    => 403});
       }
       else {
-	  $self->send_content({content => $@, code => 500});  
+        $self->send_content({content => $error,
+                             code    => 500});
       }
-  }
+  };
 
   return 0; # Apache2::Const::OK;
 }
+
+
+
+sub _no_such_module {
+  my ($self, $module) = @_;
+
+  $module =~ s!/!::!g;
+  $module =~ s/([&<>"])/$escape_entity{$1}/g;
+  return  <<__EOHTML__;
+<html>
+  <head>
+    <title>$module not found</title>
+  </head>
+  <body>
+    <h1>$module not found</h1>
+    <p>
+      The module <code>$module</code> could not be found on this server.
+      It may not be installed locally. Please try 
+      <a href='https://metacpan.org/pod/$module'>$module on Metacpan</a>.
+    </p>
+  </body>
+</html>
+__EOHTML__
+}
+
+
 
 
 sub new  {
@@ -1947,11 +1953,14 @@ Thanks
 to Philippe Bruhat who mentioned a weakness in the API,
 to Chris Dolan who supplied many useful suggestions and patches
 (esp. integration with AnnoCPAN),
-to RÃ©mi Pauchet who pointed out a regression bug with Firefox CSS,
+to Rémi Pauchet who pointed out a regression bug with Firefox CSS,
 to Alexandre Jousset who fixed a bug in the TOC display,
-to CÃ©dric Bouvier who pointed out a IO bug in serving binary files,
+to Cédric Bouvier who pointed out a IO bug in serving binary files,
 to Elliot Shank who contributed the "page_title" option,
-and to Olivier 'dolmen' MenguÃ© who suggested to export "server" into C<main::>.
+to Olivier 'dolmen' Mengué who suggested to export "server" into C<main::>,
+to Ben Bullock who added the 403 message for absent modules,
+and to Paul Cochrane for several improvements in the doc and in the
+repository structure.
 
 
 =head1 RELEASE NOTES
