@@ -8,6 +8,7 @@ my $builder = Module::Build->new(
     dist_author         => 'Laurent Dami <laurent.d...@justice.ge.ch>',
     dist_version_from   => 'lib/Pod/POM/Web.pm',
     requires => {
+      'perl'                 => 5.008,
       'parent'               => 0,
       'Alien::GvaScript'     => 1.021000,
       'Pod::POM'             => 0.25,
