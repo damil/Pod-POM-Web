@@ -100,7 +100,7 @@ sub server { # builtin HTTP server; unused if running under Apache
   my $daemon = HTTP::Daemon->new(LocalPort => $port,
                                  ReuseAddr => 1) # patch by CDOLAN
     or die "could not start daemon on port $port";
-  print STDERR "Please contact me at: <URL:", $daemon->url, ">\n";
+  print STDERR "Server started at: <URL:", $daemon->url, ">\n";
 
   # main server loop
   while (my $client_connection = $daemon->accept) {
