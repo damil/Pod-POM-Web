@@ -98,7 +98,7 @@ sub server { # builtin HTTP server; unused if running under Apache
   $port    ||= $options->{port} || 8080;
 
   my $daemon = HTTP::Daemon->new(LocalPort => $port,
-                                 ReuseAddr => 1) # patch by CDOLAN
+                                 ReuseAddr => 1)
     or die "could not start daemon on port $port";
   print STDERR "Please contact me at: <URL:", $daemon->url, ">\n";
 
@@ -106,7 +106,7 @@ sub server { # builtin HTTP server; unused if running under Apache
   while (my $client_connection = $daemon->accept) {
     while (my $req = $client_connection->get_request) {
       print STDERR "URL : " , $req->url, "\n";
-      $client_connection->force_last_request;    # patch by CDOLAN
+      $client_connection->force_last_request;
       my $response = HTTP::Response->new;
       $class->handler($req, $response, $options);
       $client_connection->send_response($response);
