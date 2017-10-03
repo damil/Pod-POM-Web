@@ -3,10 +3,12 @@
 use strict;
 use warnings;
 
-use Test::More tests => 11;
+use Test::More tests => 12;
 use HTTP::Request;
 use HTTP::Response;
 use Module::Metadata;
+use Capture::Tiny qw(capture_stdout);
+
 
 BEGIN {
 	use_ok( 'Pod::POM::Web' );
@@ -55,6 +57,26 @@ $regex   .= '\(v.\s*' . $http_req_version if $http_req_version;
 
 # now the actual test
 response_like("/HTTP/Request",  qr/$regex/, "serve_pod");
+
+subtest "perlfaq" => sub {
+    plan tests => 2;
+
+    my $ppw = Pod::POM::Web->new();
+    my $html = capture_stdout {
+        $ppw->perlfaq('not_to_be_found_in_faq');
+    };
+
+    like($html, qr/'not_to_be_found_in_faq'\s+:\s+0 answers/, "Unknown perlfaq search term returns no answers");
+
+    $html = capture_stdout {
+        $ppw->perlfaq('perl');
+    };
+    my $answers_line = $html =~ m/'perl'\s+:\s+(\d+)\s+answers/;
+    my $num_answers = $1;
+
+    cmp_ok($num_answers, '>', 0, "Known perlfaq search term returns nonzero number of answers");
+};
+
 
 sub response_like {
   my ($url, $like, $msg) = @_;

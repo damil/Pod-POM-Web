@@ -35,6 +35,7 @@ my $builder = Module::Build->new(
       'Test::More'     => 0,
       'HTTP::Request'  => 0,
       'HTTP::Response' => 0,
+      'Capture::Tiny'  => 0,
     },
     add_to_cleanup      => [ 'Pod-POM-Web-*' ],
     meta_merge => {
