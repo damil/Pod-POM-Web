@@ -432,7 +432,7 @@ sub serve_script {
 
   my $fullpath;
 
- DIR:
+  DIR:
   foreach my $dir (@script_dirs) {
     foreach my $ext ("", ".pl", ".bat") {
       $fullpath = "$dir/$path$ext";
