@@ -28,8 +28,6 @@ my $ignore_headings = qr[
       SYNOPSIS | DESCRIPTION | METHODS   | FUNCTIONS |
       BUGS     | AUTHOR      | SEE\ ALSO | COPYRIGHT | LICENSE ]x;
 
-(my $index_dir = __FILE__) =~ s[Indexer\.pm$][index];
-
 my $id_regex = qr/(?![0-9])       # don't start with a digit
                   \w\w+           # start with 2 or more word chars ..
                   (?:::\w+)*      # .. and  possibly ::some::more::components
@@ -81,6 +79,16 @@ my @stopwords = (
 );
 
 
+sub new {
+    my ($class, $request, $response, $options) = @_;
+
+    my $self = $class->SUPER::new($request, $response, $options);
+    ($self->{index_dir} = __FILE__) =~ s[Indexer\.pm$][index];
+
+    return $self;
+}
+
+
 #----------------------------------------------------------------------
 # RETRIEVING
 #----------------------------------------------------------------------
@@ -90,7 +98,7 @@ sub full_text {
   my ($self, $search_string) = @_;
 
   my $indexer = eval {
-    new Search::Indexer(dir       => $index_dir,
+    new Search::Indexer(dir       => $self->{index_dir},
                         wregex    => $wregex,
                         preMatch  => '[[',
                         postMatch => ']]');
@@ -262,6 +270,7 @@ sub index {
     if grep {!/^-(from_scratch|max_size|positions)$/} keys %options;
 
   # make sure index dir exists
+  my $index_dir = $self->{index_dir};
   -d $index_dir or mkdir $index_dir or die "mkdir $index_dir: $!";
 
   # if -from_scratch, throw away old index
@@ -404,6 +413,7 @@ sub index_file {
 sub _tie_docs {
   my ($self, $mode) = @_;
 
+  my $index_dir = $self->{index_dir};
   # tie to docs.bdb, storing {$doc_id => "$mtime\t$pathname\t$description"}
   tie %{$self->{_docs}}, 'BerkeleyDB::Hash',
       -Filename => "$index_dir/docs.bdb",
