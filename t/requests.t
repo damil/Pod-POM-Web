@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 14;
+use Test::More tests => 15;
 use HTTP::Request;
 use HTTP::Response;
 use Module::Metadata;
@@ -57,6 +57,29 @@ $regex   .= '\(v.\s*' . $http_req_version if $http_req_version;
 
 # now the actual test
 response_like("/HTTP/Request",  qr/$regex/, "serve_pod");
+
+subtest "serve script" => sub {
+    plan tests => 3;
+    my $ppw = Pod::POM::Web->new();
+    eval { $ppw->serve_script('nonexistent_script_file'); };
+    my $output = $@;
+    like(
+        $output,
+        qr/no such script : nonexistent_script_file/,
+        "Expected error message for nonexistent script file"
+    );
+
+    $output = capture_stdout {
+        $ppw->serve_script('perl');
+    };
+    like($output, qr/no documentation found/, "No docs found in script without embedded POD");
+
+    $output = capture_stdout {
+        $ppw->serve_script('pod2man');
+    };
+    like($output, qr{<title>pod2man</title>}, "Expected output from script with embedded POD");
+};
+
 
 subtest "TOC for perldocs, pragmas etc." => sub {
     plan tests => 3;

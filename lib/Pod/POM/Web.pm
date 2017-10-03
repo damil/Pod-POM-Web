@@ -440,7 +440,7 @@ sub serve_script {
     }
   }
 
-  $fullpath or die "no such script : $path";
+  $fullpath and -e $fullpath or die "no such script : $path";
 
   my $content = $self->slurp_file($fullpath, ":crlf");
   my $mtime   = (stat $fullpath)[9];
