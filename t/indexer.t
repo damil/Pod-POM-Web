@@ -4,6 +4,8 @@ use strict;
 use warnings;
 
 use Test::More;
+use Capture::Tiny qw(capture_stderr);
+use File::Temp qw(tempdir);
 
 BEGIN {
     eval {require Search::Indexer};
@@ -11,9 +13,26 @@ BEGIN {
       if $@;
 }
 
-plan tests => 2;
+plan tests => 3;
 
 use_ok( 'Pod::POM::Web::Indexer' );
+
+subtest "indexing" => sub {
+    plan tests => 2;
+
+    my $ppwi = Pod::POM::Web::Indexer->new();
+
+    $ppwi->{index_dir} = tempdir(CLEANUP => 1);
+    my $output = capture_stderr {
+        $ppwi->index();
+    };
+    like($output, qr/INDEXING/, "Creating index creates individual indices");
+
+    $output = capture_stderr {
+        $ppwi->index();
+    };
+    unlike($output, qr/INDEXING/, "Rerunning index avoids recreation");
+};
 
 subtest "uri escape" => sub {
     plan tests => 3;
