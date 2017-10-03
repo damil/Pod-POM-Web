@@ -3,11 +3,11 @@
 use strict;
 use warnings;
 
-use Test::More tests => 17;
+use Test::More tests => 18;
 use HTTP::Request;
 use HTTP::Response;
 use Module::Metadata;
-use Capture::Tiny qw(capture_stdout);
+use Capture::Tiny qw(capture_stdout capture_stderr);
 
 
 BEGIN {
@@ -57,6 +57,17 @@ $regex   .= '\(v.\s*' . $http_req_version if $http_req_version;
 
 # now the actual test
 response_like("/HTTP/Request",  qr/$regex/, "serve_pod");
+
+
+subtest "builtin server" => sub {
+    plan tests => 1;
+    my $ppw = Pod::POM::Web->new();
+    my $output = capture_stderr {
+        $ppw->server(8888, 1);
+    };
+    like($output, qr{Please contact me at: <URL:http://.*?:8888/>}, "Expected server startup message");
+};
+
 
 subtest "module not found" => sub {
     plan tests => 1;
