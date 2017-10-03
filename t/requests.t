@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 15;
+use Test::More tests => 16;
 use HTTP::Request;
 use HTTP::Response;
 use Module::Metadata;
@@ -57,6 +57,14 @@ $regex   .= '\(v.\s*' . $http_req_version if $http_req_version;
 
 # now the actual test
 response_like("/HTTP/Request",  qr/$regex/, "serve_pod");
+
+subtest "fake perltoc" => sub {
+    plan tests => 1;
+    my $ppw = Pod::POM::Web->new();
+    my $html = $ppw->fake_perltoc();
+    like($html, qr/Sorry, this page cannot be displayed/, "Found expected fake perltoc message");
+};
+
 
 subtest "serve script" => sub {
     plan tests => 3;
