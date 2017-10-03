@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 12;
+use Test::More tests => 13;
 use HTTP::Request;
 use HTTP::Response;
 use Module::Metadata;
@@ -57,6 +57,24 @@ $regex   .= '\(v.\s*' . $http_req_version if $http_req_version;
 
 # now the actual test
 response_like("/HTTP/Request",  qr/$regex/, "serve_pod");
+
+subtest "perlvar" => sub {
+    plan tests => 2;
+
+    my $ppw = Pod::POM::Web->new();
+    my $html = capture_stdout {
+        $ppw->perlvar('unable_to_be_found_perl_var');
+    };
+
+    like($html, qr/No documentation found/, "Unknown perlvar search term returns no answers");
+
+    $html = capture_stdout {
+        $ppw->perlvar('@INC');
+    };
+
+    like($html, qr/Extract\s+from\s+.*?perlvar/, "Known perlvar search term returns entry");
+};
+
 
 subtest "perlfaq" => sub {
     plan tests => 2;
