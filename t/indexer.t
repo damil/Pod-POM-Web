@@ -3,15 +3,16 @@
 use strict;
 use warnings;
 
-use Test::More tests => 1;
+use Test::More;
 
-
-SKIP: {
-  eval {require Search::Indexer};
-  skip "Search::Indexer does not seem to be installed", 1
-    if $@;
-  use_ok( 'Pod::POM::Web::Indexer' );
+BEGIN {
+    eval {require Search::Indexer};
+    plan skip_all => 'Search::Indexer does not seem to be installed'
+      if $@;
 }
 
+plan tests => 1;
+
+use_ok( 'Pod::POM::Web::Indexer' );
 
 # TODO ... more than just a compile test
