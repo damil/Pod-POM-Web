@@ -81,6 +81,15 @@ my @stopwords = (
 );
 
 
+sub new {
+    my ($class, $request, $response, $options) = @_;
+
+    my $self = $class->SUPER::new($request, $response, $options);
+
+    return $self;
+}
+
+
 #----------------------------------------------------------------------
 # RETRIEVING
 #----------------------------------------------------------------------
