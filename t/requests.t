@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 13;
+use Test::More tests => 14;
 use HTTP::Request;
 use HTTP::Response;
 use Module::Metadata;
@@ -57,6 +57,27 @@ $regex   .= '\(v.\s*' . $http_req_version if $http_req_version;
 
 # now the actual test
 response_like("/HTTP/Request",  qr/$regex/, "serve_pod");
+
+subtest "TOC for perldocs, pragmas etc." => sub {
+    plan tests => 3;
+
+    my $ppw = Pod::POM::Web->new();
+    my $html = capture_stdout {
+        $ppw->toc_for('perldocs');
+    };
+    like($html, qr/perlintro/, "Perl intro included in perldocs TOC info");
+
+    $html = capture_stdout {
+        $ppw->toc_for('pragmas');
+    };
+    like($html, qr/href='strict'/, "strict pragma included in pragmas TOC info");
+
+    $html = capture_stdout {
+        $ppw->toc_for('scripts');
+    };
+    like($html, qr/href='script\/perlbug'/, "perlbug script included in scripts TOC info");
+};
+
 
 subtest "perlvar" => sub {
     plan tests => 2;
