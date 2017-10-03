@@ -92,12 +92,14 @@ sub import {
 #----------------------------------------------------------------------
 
 sub server { # builtin HTTP server; unused if running under Apache
-  my ($class, $port, $options) = @_;
+  my ($class, $port, $timeout, $options) = @_;
 
   $options ||= $class->_options_from_cmd_line;
   $port    ||= $options->{port} || 8080;
+  $timeout ||= $options->{timeout};
 
   my $daemon = HTTP::Daemon->new(LocalPort => $port,
+                                 Timeout => $timeout,
                                  ReuseAddr => 1) # patch by CDOLAN
     or die "could not start daemon on port $port";
   print STDERR "Please contact me at: <URL:", $daemon->url, ">\n";
@@ -432,7 +434,7 @@ sub serve_script {
 
   my $fullpath;
 
- DIR:
+  DIR:
   foreach my $dir (@script_dirs) {
     foreach my $ext ("", ".pl", ".bat") {
       $fullpath = "$dir/$path$ext";
@@ -440,7 +442,7 @@ sub serve_script {
     }
   }
 
-  $fullpath or die "no such script : $path";
+  $fullpath and -e $fullpath or die "no such script : $path";
 
   my $content = $self->slurp_file($fullpath, ":crlf");
   my $mtime   = (stat $fullpath)[9];
