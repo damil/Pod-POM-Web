@@ -4,7 +4,7 @@ use strict;
 use warnings;
 
 use Test::More;
-use Capture::Tiny qw(capture_stderr);
+use Capture::Tiny qw(capture_stdout capture_stderr);
 use File::Temp qw(tempdir);
 
 BEGIN {
@@ -13,7 +13,7 @@ BEGIN {
       if $@;
 }
 
-plan tests => 3;
+plan tests => 4;
 
 use_ok( 'Pod::POM::Web::Indexer' );
 
@@ -32,6 +32,31 @@ subtest "indexing" => sub {
         $ppwi->index();
     };
     unlike($output, qr/INDEXING/, "Rerunning index avoids recreation");
+};
+
+subtest "modlist" => sub {
+    plan tests => 4;
+    my $ppwi = Pod::POM::Web::Indexer->new();
+    $ppwi->{index_dir} = tempdir(CLEANUP => 1);
+    capture_stderr {
+        $ppwi->index();  # index needs to be created for modlist tests
+    };
+
+    eval { $ppwi->modlist(); };
+    like($@, qr/module_list: arg too short/, "Error message with undef search string");
+
+    eval { $ppwi->modlist(); };
+    like($@, qr/module_list: arg too short/, "Error message with empty search string");
+
+    my $output = capture_stdout {
+        $ppwi->modlist('nonexistent_search_string');
+    };
+    like($output, qr/\[\]/, "Empty list returned with unknown search string");
+
+    $output = capture_stdout {
+        $ppwi->modlist('devel');
+    };
+    like($output, qr/Devel::/, "Module list returned with known search string");
 };
 
 subtest "uri escape" => sub {
