@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 16;
+use Test::More tests => 17;
 use HTTP::Request;
 use HTTP::Response;
 use Module::Metadata;
@@ -57,6 +57,13 @@ $regex   .= '\(v.\s*' . $http_req_version if $http_req_version;
 
 # now the actual test
 response_like("/HTTP/Request",  qr/$regex/, "serve_pod");
+
+subtest "module not found" => sub {
+    plan tests => 1;
+    response_like("/_no_such_module", qr/_no_such_module not found/,
+                  "See expected error message with unknown module");
+};
+
 
 subtest "fake perltoc" => sub {
     plan tests => 1;
