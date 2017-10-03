@@ -15,6 +15,6 @@ perl:
 
 install:
     - sudo apt-get install libdb-dev
-    - cpanm --installdeps .
-    - cpanm --with-recommends .
+    - cpanm --installdeps . || { cat ~/.cpanm/build.log ; false ; }
+    - cpanm --with-recommends . || { cat ~/.cpanm/build.log ; false ; }
     - wget http://annocpan.org/annopod.db -O ~/.annopod.db
