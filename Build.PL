@@ -5,12 +5,14 @@ use Module::Build;
 my $builder = Module::Build->new(
     module_name         => 'Pod::POM::Web',
     license             => 'perl',
-    dist_author         => 'Laurent Dami <laurent.d...@justice.ge.ch>',
+    dist_author         => 'Laurent Dami <dami AT cpan.org>',
     dist_version_from   => 'lib/Pod/POM/Web.pm',
     requires => {
       'perl'                 => 5.008,
       'parent'               => 0,
       'Alien::GvaScript'     => 1.021000,
+      'Encode'               => 0,
+      'Encode::Detect'       => 0,
       'Pod::POM'             => 0.25,
       'Pod::POM::View::HTML' => 0,
       'List::Util'           => 0,

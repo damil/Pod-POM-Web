@@ -15,10 +15,12 @@ use URI;                            # parsing incoming requests
 use URI::QueryParam;                # implements URI->query_form_hash
 use MIME::Types;                    # translate file extension into MIME type
 use Alien::GvaScript 1.021000;      # javascript files
-use Encode::Guess;                  # guessing if pod source is utf8 or latin1
 use Config;                         # where are the script directories
 use Getopt::Long    qw/GetOptions/; # parsing options from command-line
 use Module::Metadata 1.000033;      # get version number from module
+use Encode          qw/decode encode_utf8/;
+use Encode::Detect;
+
 
 #----------------------------------------------------------------------
 # globals
@@ -292,7 +294,9 @@ sub serve_source {
   my $display_text;
 
   foreach my $file (@files) {
-    my $text = $self->slurp_file($file, ":crlf");
+    my $text = decode("Detect", $self->slurp_file($file, ":raw"));
+    $text =~ s/\r\n/\n/g;
+
     my $view = $self->mk_view(
       line_numbering  => $params->{lines},
       syntax_coloring => ($params->{coloring} ? $coloring_package : "")
@@ -320,7 +324,7 @@ __EOHTML__
 <a href="$self->{root_url}/$path" style="float:right">Doc</a>
 __EOHTML__
 
-  return $self->send_html(<<__EOHTML__, $mtime);
+  my $html = <<__EOHTML__;
 <html>
 <head>
   <title>Source of $path</title>
@@ -341,6 +345,9 @@ $display_text
 </body>
 </html>
 __EOHTML__
+
+  $self->send_html($html, $mtime);
+
 }
 
 
@@ -1154,16 +1161,15 @@ sub send_html {
   $html =~ s[<head>]
             [<head>\n<meta http-equiv="X-UA-Compatible" content="IE=edge">];
 
-  $self->send_content({content => $html, code => 200, mtime => $mtime});
+  $self->send_content({content => encode_utf8($html), code => 200, mtime => $mtime, charset => 'UTF-8'});
 }
 
 
 
 sub send_content {
   my ($self, $args) = @_;
-  my $encoding  = guess_encoding($args->{content}, qw/ascii utf8 latin1/);
-  my $charset   = ref $encoding ? $encoding->name : "";
-     $charset   =~ s/^ascii/US-ascii/; # Firefox insists on that imperialist name
+
+  my $charset   = $args->{charset};
   my $length    = length $args->{content};
   my $mime_type = $args->{mime_type} || "text/html";
      $mime_type .= "; charset=$charset" if $charset and $mime_type =~ /html/;
