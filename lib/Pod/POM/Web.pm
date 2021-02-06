@@ -31,14 +31,14 @@ our $VERSION = '1.23';
 # some subdirs never contain Pod documentation
 my @ignore_toc_dirs = qw/auto unicore/;
 
-# filter @INC (don't want '.', nor server_root added by mod_perl)
+# filter @INC (we don't want '.', nor server_root added by mod_perl)
 my $server_root = eval {Apache2::ServerUtil::server_root()} || "";
 our                # because accessed from Pod::POM::Web::Indexer
-   @search_dirs = grep {!/^\./ && $_ ne $server_root} @INC;
+  @default_module_dirs = grep {!/^\./ && $_ ne $server_root} @INC;
 
 # directories for executable perl scripts
-my @config_script_dirs = qw/sitescriptexp vendorscriptexp scriptdirexp/;
-my @script_dirs        = grep {$_} @Config{@config_script_dirs};
+my @config_script_dirs  = qw/sitescriptexp vendorscriptexp scriptdirexp/;
+my @default_script_dirs = grep {$_} @Config{@config_script_dirs};
 
 # syntax coloring (optional)
 my $coloring_package
@@ -102,7 +102,7 @@ sub server { # builtin HTTP server; unused if running under Apache
   my $daemon = HTTP::Daemon->new(LocalPort => $port,
                                  ReuseAddr => 1) # patch by CDOLAN
     or die "could not start daemon on port $port";
-  print STDERR "$class listening for requests at: <URL:", $daemon->url, ">\n";
+  print STDERR "$class listening for requests at URL: ", $daemon->url, "\n";
 
   # main server loop
   while (my $client_connection = $daemon->accept) {
@@ -120,26 +120,35 @@ sub server { # builtin HTTP server; unused if running under Apache
 
 
 sub _options_from_cmd_line {
-  GetOptions(\my %options, qw/port=i page_title|title=s/);
+  GetOptions \my %options,
+    'port=i',
+    'page_title|title=s',
+    'module_dirs|mdirs=s@{,}',
+    'script_dirs|sdirs=s@{,}',
+    ;
+
+  push @{$options{module_dirs}}, @default_module_dirs;
+  push @{$options{script_dirs}}, @default_script_dirs;
+
   $options{port} ||= $ARGV[0] if @ARGV; # backward support for old API
   return \%options;
 }
 
-
 sub handler : method  {
   my ($class, $request, $response, $options) = @_;
-  my $self = $class->new($request, $response, $options);
 
-  eval { $self->dispatch_request(); 1}
+  my $handler_obj = $class->new($request, $response, $options);
+
+  eval { $handler_obj->dispatch_request(); 1}
     or do {
       my $error = $@;
       if ($error =~ /No file for '(.*)'/) {
-        $self->send_content({content => $self->_no_such_module($1),
-                             code    => 403});
+        $handler_obj->send_content({content => $handler_obj->_no_such_module($1),
+                                    code    => 403});
       }
       else {
-        $self->send_content({content => $error,
-                             code    => 500});
+        $handler_obj->send_content({content => $error,
+                                    code    => 500});
       }
   };
 
@@ -220,6 +229,8 @@ sub new  {
 
 
 
+sub module_dirs {@{shift->{module_dirs}}}
+sub script_dirs {@{shift->{script_dirs}}}
 
 sub dispatch_request {
   my ($self) = @_;
@@ -239,7 +250,10 @@ sub dispatch_request {
     /^source\/(.*)$/   and return $self->serve_source($1);
 
     # for debugging
-    /^_dirs$/          and return $self->send_html(join "<br>", @search_dirs);
+    /^_dirs$/          and return $self->send_html(
+      join "<br>", "<b>Modules</b>" => $self->module_dirs,
+                   "<b>Scripts</b>" => $self->script_dirs,
+      );
 
     # file extension : passthrough
     /\.(\w+)$/         and return $self->serve_file($path_info, $1);
@@ -354,7 +368,7 @@ __EOHTML__
 sub serve_file {
   my ($self, $path, $extension) = @_;
 
-  my $fullpath = firstval {-f $_} map {"$_/$path"} @search_dirs
+  my $fullpath = firstval {-f $_} map {"$_/$path"} $self->module_dirs
     or die "could not find $path";
 
   my $mime_type = MIME::Types->new->mimeTypeOf($extension);
@@ -440,7 +454,7 @@ sub serve_script {
   my $fullpath;
 
  DIR:
-  foreach my $dir (@script_dirs) {
+  foreach my $dir ($self->script_dirs) {
     foreach my $ext ("", ".pl", ".bat") {
       $fullpath = "$dir/$path$ext";
       last DIR if -f $fullpath;
@@ -473,7 +487,7 @@ sub find_source {
   # serving a script ?    # TODO : factorize common code with serve_script
   if ($path =~ s[^scripts/][]) {
   DIR:
-    foreach my $dir (@script_dirs) {
+    foreach my $dir ($self->script_dirs) {
       foreach my $ext ("", ".pl", ".bat") {
         -f "$dir/$path$ext" or next;
         return ("$dir/$path$ext");
@@ -483,7 +497,7 @@ sub find_source {
   }
 
   # otherwise, serving a module
-  foreach my $prefix (@search_dirs) {
+  foreach my $prefix ($self->module_dirs) {
     my @found = grep  {-f} ("$prefix/$path.pod",
                             "$prefix/$path.pm",
                             "$prefix/pod/$path.pod",
@@ -569,7 +583,7 @@ sub toc_scripts {
   my %scripts;
 
   # gather all scripts and group them by initial letter
-  foreach my $dir (@script_dirs) {
+  foreach my $dir ($self->script_dirs) {
     opendir my $dh, $dir or next;
   NAME:
     foreach my $name (readdir $dh) {
@@ -607,7 +621,7 @@ sub find_entries_for {
 
   my %entries;
 
-  foreach my $root_dir (@search_dirs) {
+  foreach my $root_dir ($self->module_dirs) {
     my $dirname = $prefix ? "$root_dir/$prefix" : $root_dir;
     opendir my $dh, $dirname or next;
     foreach my $name (readdir $dh) {
@@ -617,7 +631,7 @@ sub find_entries_for {
       my $has_pod = $name =~ s/\.(pm|pod)$//;
 
       # skip if this subdir is a member of @INC (not a real module namespace)
-      next if $is_dir and grep {m[^\Q$dirname/$name\E]} @search_dirs;
+      next if $is_dir and grep {m[^\Q$dirname/$name\E]} $self->module_dirs;
 
       if ($is_dir || $has_pod) { # found a TOC entry
         $entries{$name}{node} = $prefix ? "$prefix/$name" : $name;
@@ -1905,10 +1919,32 @@ of course relative or absolute links can be used.
 
 Public entry point for serving a request. Objects C<$request> and
 C<$response> are specific to the hosting HTTP server (modperl, HTTP::Daemon
-or cgi-bin); C<$options> is a hashref that currently contains
-only one possible entry : C<page_title>, for specifying the HTML title
+or cgi-bin); C<$options> is a hashref that can contain 
+
+=over 
+
+=item C<page_title>
+
+for specifying the HTML title
 of the application (useful if you run several concurrent instances
 of Pod::POM::Web).
+
+=item C<port>
+
+the HTTP port listening for requests
+
+=item C<module_dirs>
+
+additional directories for searching for modules
+
+=item <script_dirs>
+
+additional directories for searching for scripts
+
+=back
+
+
+
 
 =head2 server
 
@@ -1981,23 +2017,15 @@ command :
   perl -MPod::POM::Web::Indexer -e "index(-from_scratch => 1)"
 
 
-=head1 BUGS
-
-Please report any bugs or feature requests to
-C<bug-pod-pom-web at rt.cpan.org>, or through the web interface at
-L<http://rt.cpan.org/NoAuth/ReportBug.html?Queue=Pod-POM-Web>.
-I will be notified, and then you'll automatically be notified of progress on
-your bug as I make changes.
-
 
 =head1 AUTHOR
 
-Laurent Dami, C<< <laurent.d...@justice.ge.ch> >>
+Laurent Dami, C<< <dami AT cpan DOT org> >>
 
 
 =head1 COPYRIGHT & LICENSE
 
-Copyright 2007-2017 Laurent Dami, all rights reserved.
+Copyright 2007-2021 Laurent Dami, all rights reserved.
 
 This program is free software; you can redistribute it and/or modify it
 under the same terms as Perl itself.
