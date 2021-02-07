@@ -24,7 +24,6 @@ my $builder = Module::Build->new(
       'MIME::Types'          => 0,
       'URI'                  => 0,
       'URI::QueryParam'      => 0,
-      'Encode::Guess'        => 0,
       'Config'               => 0,
       'POSIX'                => 0,
       },

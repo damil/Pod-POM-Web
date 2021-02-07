@@ -26,7 +26,7 @@ use Encode::Detect;
 # globals
 #---------------------------------------------------------------------
 
-our $VERSION = '1.23';
+our $VERSION = '1.24';
 
 # some subdirs never contain Pod documentation
 my @ignore_toc_dirs = qw/auto unicore/;

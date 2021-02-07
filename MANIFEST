@@ -9,6 +9,5 @@ META.yml
 README
 t/indexer.t
 t/requests.t
-t/TODO.txt
 xt/pod.t
 META.json

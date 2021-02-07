@@ -1,5 +1,9 @@
 Revision history for Pod-POM-Web
 
+1.24 07.02.2021
+  - fixed encoding problems when source code is UTF-8
+  - startup options to specify additional module dirs and script dirs
+  - drop links to AnnoCPAN (unfortunately that project is dead)
   - various improvements in doc and repository structure (Paul Cochrane)
   - return 403 on absent module (Ben Bullock)
 
