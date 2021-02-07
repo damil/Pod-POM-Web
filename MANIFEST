@@ -8,7 +8,7 @@ MANIFEST			This list of files
 META.yml
 README
 t/indexer.t
-t/pod.t
 t/requests.t
 t/TODO.txt
+xt/pod.t
 META.json
