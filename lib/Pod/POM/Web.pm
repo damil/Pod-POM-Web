@@ -90,7 +90,7 @@ sub import {
 }
 
 #----------------------------------------------------------------------
-# main entry point
+# CLASS METHODS -- main entry point
 #----------------------------------------------------------------------
 
 sub server { # builtin HTTP server; unused if running under Apache
@@ -156,30 +156,9 @@ sub handler : method  {
 }
 
 
-
-sub _no_such_module {
-  my ($self, $module) = @_;
-
-  $module =~ s!/!::!g;
-  $module =~ s/([&<>"])/$escape_entity{$1}/g;
-  return  <<__EOHTML__;
-<html>
-  <head>
-    <title>$module not found</title>
-  </head>
-  <body>
-    <h1>$module not found</h1>
-    <p>
-      The module <code>$module</code> could not be found on this server.
-      It may not be installed locally. Please try 
-      <a href='https://metacpan.org/pod/$module'>$module on Metacpan</a>.
-    </p>
-  </body>
-</html>
-__EOHTML__
-}
-
-
+#----------------------------------------------------------------------
+# CONSTRUCTOR for the "handler object" -- instantiated at each request
+#----------------------------------------------------------------------
 
 
 sub new  {
@@ -227,6 +206,9 @@ sub new  {
   bless $self, $class;
 }
 
+#----------------------------------------------------------------------
+# INSTANCE METHODS for the "handler object"
+#----------------------------------------------------------------------
 
 
 sub module_dirs {@{shift->{module_dirs}}}
@@ -520,6 +502,32 @@ sub pod2pom {
   my $pom = $parser->parse_text($content) or die $parser->error;
   return $pom;
 }
+
+sub _no_such_module {
+  my ($self, $module) = @_;
+
+  $module =~ s!/!::!g;
+  $module =~ s/([&<>"])/$escape_entity{$1}/g;
+  return  <<__EOHTML__;
+<html>
+  <head>
+    <title>$module not found</title>
+  </head>
+  <body>
+    <h1>$module not found</h1>
+    <p>
+      The module <code>$module</code> could not be found on this server.
+      It may not be installed locally. Please try 
+      <a href='https://metacpan.org/pod/$module'>$module on Metacpan</a>.
+    </p>
+  </body>
+</html>
+__EOHTML__
+}
+
+
+
+
 
 #----------------------------------------------------------------------
 # tables of contents
@@ -1935,7 +1943,9 @@ the HTTP port listening for requests
 
 =item C<module_dirs>
 
-additional directories for searching for modules
+directories for searching for modules,
+in addition to the standard ones installed with your perl executable.
+
 
 =item <script_dirs>
 
