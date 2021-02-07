@@ -17,4 +17,3 @@ install:
     - sudo apt-get install libdb-dev
     - cpanm --installdeps .
     - cpanm --with-recommends .
-    - wget http://annocpan.org/annopod.db -O ~/.annopod.db

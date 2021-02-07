@@ -31,7 +31,6 @@ my $builder = Module::Build->new(
     recommends => {
       'Search::Indexer'           => 0.75,
       'PPI::HTML'                 => 0,
-      'AnnoCPAN::Perldoc::Filter' => 0,
     },
     build_requires => {
       'Test::More'     => 0,

@@ -19,13 +19,6 @@ CODE {
      padding: 1px; */
 }
 
-.AnnoCPAN {
-  margin-left: 20%;
-  background: blanchedalmond;
-  border: 1px solid pink;
-  font-size: 85%;
- }
-
 /* classes for syntax highlighting. */
 
 /* copied from Adam Kennedy's PPI examples. */

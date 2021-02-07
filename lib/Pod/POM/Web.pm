@@ -31,7 +31,7 @@ our $VERSION = '1.23';
 # some subdirs never contain Pod documentation
 my @ignore_toc_dirs = qw/auto unicore/;
 
-# filter @INC (we don't want '.', nor server_root added by mod_perl)
+# directories for modules -- filter @INC (we don't want '.', nor server_root added by mod_perl)
 my $server_root = eval {Apache2::ServerUtil::server_root()} || "";
 our                # because accessed from Pod::POM::Web::Indexer
   @default_module_dirs = grep {!/^\./ && $_ ne $server_root} @INC;
@@ -56,12 +56,6 @@ my $has_cpan = 0; # eval {require CPAN};
 # running it through Pod::POM. Source code is passed in $_[0] and
 # should be modified in place.
 my @podfilters = (
-
-  # AnnoCPAN must be first in the filter list because
-  # it uses the MD5 of the original source
-  eval {require AnnoCPAN::Perldoc::Filter}
-    ? sub {$_[0] = AnnoCPAN::Perldoc::Filter->new->filter($_[0])}
-    : (),
 
   # Pod::POM fails to parse correctly when there is an initial blank line
   sub { $_[0] =~ s/\A\s*// },
@@ -524,9 +518,6 @@ sub _no_such_module {
 </html>
 __EOHTML__
 }
-
-
-
 
 
 #----------------------------------------------------------------------
@@ -1388,15 +1379,8 @@ sub view_item {
      $title = "" if $title =~ /^\s*\*\s*$/;
 
   my $class = "";
-  my $id    = "";
-
-  if ($title =~ /^AnnoCPAN/) {
-    $class = " class='AnnoCPAN'";
-  }
-  else {
-    $id   = _title_to_id($title);
-    $id &&= qq{ id="$id"};
-  }
+  my $id    = _title_to_id($title);
+  $id &&= qq{ id="$id"};
 
   my $content = $item->content->present($self);
   $title   = qq{<b>$title</b>} if $title;
@@ -1453,9 +1437,7 @@ sub view_pod {
     # hyperlinks to various internet resources
     $module_refs = qq{<br>
      <a href="https://metacpan.org/pod/$mod_name"
-        target="_blank">meta::cpan</a> |
-     <a href="http://www.annocpan.org/?mode=search&field=Module&name=$mod_name"
-        target="_blank">Anno</a>
+        target="_blank">meta::cpan</a>
     };
 
     if ($has_cpan) {
@@ -1865,33 +1847,6 @@ install L<Search::Indexer> from CPAN
 =item *
 
 build the index as described in L<Pod::POM::Web::Indexer> documentation.
-
-=back
-
-
-
-=head3 AnnoCPAN comments
-
-The website L<http://annocpan.org/> lets people add comments to the
-documentation of CPAN modules.  The AnnoCPAN database is freely
-downloadable and can be easily integrated with locally installed
-modules via runtime filtering.
-
-If you want AnnoCPAN comments to show up in Pod::POM::Web, do the following:
-
-=over
-
-=item *
-
-install L<AnnoCPAN::Perldoc> from CPAN;
-
-=item *
-
-download the database from L<http://annocpan.org/annopod.db> and save
-it as F<$HOME/.annopod.db> (see the documentation in the above module
-for more details).  You may also like to try
-L<AnnoCPAN::Perldoc::SyncDB> which is a crontab-friendly tool for
-periodically downloading the AnnoCPAN database.
 
 =back
 
