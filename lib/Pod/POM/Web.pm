@@ -6,21 +6,22 @@ use warnings;
 use 5.008;
 no warnings 'uninitialized';
 
-use Pod::POM 0.25;                  # parsing Pod
-use List::Util      qw/max/;        # maximum
+use Pod::POM 0.25;                          # parsing Pod
+use List::Util      qw/max/;                # maximum
 use List::MoreUtils qw/uniq firstval any/;
-use Module::CoreList;               # asking if a module belongs to Perl core
-use HTTP::Daemon;                   # for the builtin HTTP server
-use URI;                            # parsing incoming requests
-use URI::QueryParam;                # implements URI->query_form_hash
-use MIME::Types;                    # translate file extension into MIME type
-use Alien::GvaScript 1.021000;      # javascript files
-use Config;                         # where are the script directories
-use Getopt::Long    qw/GetOptions/; # parsing options from command-line
-use Module::Metadata 1.000033;      # get version number from module
+use Module::CoreList;                       # asking if a module belongs to Perl core
+use MIME::Types;                            # translate file extension into MIME type
+use Alien::GvaScript 1.021000;              # javascript files
+use Config;                                 # where are the script directories
+use Getopt::Long    qw/GetOptions/;         # parsing options from command-line
+use Module::Metadata 1.000033;              # get version number from module
 use Encode          qw/decode encode_utf8/;
 use Encode::Detect;
 
+use parent 'Plack::Component';
+use Plack::Request;
+use Plack::Response;
+use Plack::Util;
 
 #----------------------------------------------------------------------
 # globals
@@ -63,13 +64,6 @@ my @podfilters = (
 );
 
 
-our # because used by Pod::POM::View::HTML::_PerlDoc
-  %escape_entity = ('&' => '&amp;',
-                    '<' => '&lt;',
-                    '>' => '&gt;',
-                    '"' => '&quot;');
-
-
 #----------------------------------------------------------------------
 # import : just export the "server" function if called from command-line
 #----------------------------------------------------------------------
@@ -78,44 +72,61 @@ sub import {
   my $class = shift;
   my ($package, $filename) = caller;
 
-  no strict 'refs';
-  *{'main::server'} = sub {$class->server(@_)}
-    if $package eq 'main' and $filename eq '-e';
+  if ($package eq 'main' and $filename eq '-e') {
+    no strict 'refs';
+    *{'main::server'} = sub {
+
+      my $options ||= $class->_options_from_cmd_line;
+      my $app = $class->new($options)->to_app;
+
+
+      require Plack::Runner;
+      my $runner = Plack::Runner->new;
+      # $runner->parse_options(@ARGV);
+      $runner->run($app);
+    }
+  }
 }
+
+
 
 #----------------------------------------------------------------------
 # CLASS METHODS -- main entry point
 #----------------------------------------------------------------------
 
-sub server { # builtin HTTP server; unused if running under Apache
-  my ($class, $port, $options) = @_;
+sub call { # request dispatcher (see L<Plack::Component>)
+  my ($self, $env) = @_;
 
-  $options ||= $class->_options_from_cmd_line;
-  $port    ||= $options->{port} || 8080;
+  my $req = Plack::Request->new($env);
 
-  my $daemon = HTTP::Daemon->new(LocalPort => $port,
-                                 ReuseAddr => 1) # patch by CDOLAN
-    or die "could not start daemon on port $port";
-  print STDERR "$class listening for requests at URL: ", $daemon->url, "\n";
+  $self->{root_url} = $req->script_name if not exists $self->{root_url};
 
-  # main server loop
-  while (my $client_connection = $daemon->accept) {
-    while (my $req = $client_connection->get_request) {
-      print STDERR "URL : " , $req->url, "\n";
-      $client_connection->force_last_request;    # patch by CDOLAN
-      my $response = HTTP::Response->new;
-      $class->handler($req, $response, $options);
-      $client_connection->send_response($response);
-    }
-    $client_connection->close;
-    undef($client_connection);
-  }
+  $self->dispatch_request($req);
 }
+
+
+sub show_error {
+  my ($self, $msg) = @_;
+
+  return [<<__EOHTML__];
+<!doctype html>
+<html>
+<head><title>500 Server Error</title></head>
+<body><h1>500 Server Error</h1>
+<pre>
+$msg
+</pre>
+</body>
+__EOHTML__
+}
+
+
+
+
 
 
 sub _options_from_cmd_line {
   GetOptions \my %options,
-    'port=i',
     'page_title|title=s',
     'module_dirs|mdirs=s@{,}',
     'script_dirs|sdirs=s@{,}',
@@ -124,11 +135,11 @@ sub _options_from_cmd_line {
   push @{$options{module_dirs}}, @default_module_dirs;
   push @{$options{script_dirs}}, @default_script_dirs;
 
-  $options{port} ||= $ARGV[0] if @ARGV; # backward support for old API
   return \%options;
 }
 
-sub handler : method  {
+sub OLD_handler : method  {  # TODO : make it work for Apache2
+  
   my ($class, $request, $response, $options) = @_;
 
   my $handler_obj = $class->new($request, $response, $options);
@@ -151,54 +162,17 @@ sub handler : method  {
 
 
 #----------------------------------------------------------------------
-# CONSTRUCTOR for the "handler object" -- instantiated at each request
+# CONSTRUCTOR 
 #----------------------------------------------------------------------
 
+sub new {
+  my ($class, %options) = @_;
 
-sub new  {
-  my ($class, $request, $response, $options) = @_;
-  $options ||= {};
-  my $self = {%$options};
-
-  # cheat: will create an instance of the Indexer subclass if possible
-  if (!$no_indexer && $class eq __PACKAGE__) {
-    $class = "Pod::POM::Web::Indexer";
-  }
-  for (ref $request) {
-
-    /^Apache/ and do { # coming from mod_perl
-      my $path = $request->path_info;
-      my $q    = URI->new;
-      $q->query($request->args);
-      my $params = $q->query_form_hash;
-      (my $uri = $request->uri) =~ s/$path$//;
-      $self->{response} = $request; # Apache API: same object for both
-      $self->{root_url} = $uri;
-      $self->{path}     = $path;
-      $self->{params}   = $params;
-      last;
-    };
-
-    /^HTTP/ and do { # coming from HTTP::Daemon // server() method above
-      $self->{response} = $response;
-      $self->{root_url} = "";
-      $self->{path}     = $request->url->path;
-      $self->{params}   = $request->url->query_form_hash;
-      last;
-    };
-
-    #otherwise (coming from cgi-bin or mod_perl Registry)
-    my $q = URI->new;
-    $q->query($ENV{QUERY_STRING});
-    my $params = $q->query_form_hash;
-    $self->{response} = undef;
-    $self->{root_url} = $ENV{SCRIPT_NAME};
-    $self->{path}     = $ENV{PATH_INFO};
-    $self->{params}   = $params;
-  }
-
-  bless $self, $class;
+  my $cmd_opts = _options_from_cmd_line();
+  my $self = bless {%$cmd_opts, %options}, $class;
+  return $self;
 }
+
 
 #----------------------------------------------------------------------
 # INSTANCE METHODS for the "handler object"
@@ -209,21 +183,21 @@ sub module_dirs {@{shift->{module_dirs}}}
 sub script_dirs {@{shift->{script_dirs}}}
 
 sub dispatch_request {
-  my ($self) = @_;
-  my $path_info = $self->{path};
+  my ($self, $req) = @_;
+  my $path_info = $req->path_info;
 
   # security check : no outside directories
   $path_info =~ m[(\.\.|//|\\|:)] and die "illegal path: $path_info";
 
-  $path_info =~ s[^/][] or return $self->index_frameset;
+  $path_info =~ s[^/][] or return $self->index_frameset($req);
   for ($path_info) {
-    /^$/               and return $self->index_frameset;
-    /^index$/          and return $self->index_frameset;
-    /^toc$/            and return $self->main_toc;
+    /^$/               and return $self->index_frameset($req);
+    /^index$/          and return $self->index_frameset($req);
+    /^toc$/            and return $self->main_toc($req);
     /^toc\/(.*)$/      and return $self->toc_for($1);   # Ajax calls
     /^script\/(.*)$/   and return $self->serve_script($1);
-    /^search$/         and return $self->dispatch_search;
-    /^source\/(.*)$/   and return $self->serve_source($1);
+    /^search$/         and return $self->dispatch_search($req);
+    /^source\/(.*)$/   and return $self->serve_source($1, $req);
 
     # for debugging
     /^_dirs$/          and return $self->send_html(
@@ -241,16 +215,15 @@ sub dispatch_request {
 
 
 sub index_frameset{
-  my ($self) = @_;
+  my ($self, $req) = @_;
 
   # initial page to open
-  my $ini         = $self->{params}{open};
+  my $ini         = $req->parameters->{open};
   my $ini_content = $ini || "perl";
   my $ini_toc     = $ini ? "toc?open=$ini" : "toc";
 
   # HTML title
-  my $title = $self->{page_title} || 'Perl documentation';
-  $title =~ s/([&<>"])/$escape_entity{$1}/g;
+  my $title = Plack::Util::encode_html($self->{page_title} || 'Perl documentation');
 
   return $self->send_html(<<__EOHTML__);
 <html>
@@ -271,9 +244,9 @@ __EOHTML__
 #----------------------------------------------------------------------
 
 sub serve_source {
-  my ($self, $path) = @_;
+  my ($self, $path, $req) = @_;
 
-  my $params = $self->{params};
+  my $params = $req->parameters;
 
   # default (if not printing): line numbers and syntax coloring are on
   $params->{print} or  $params->{lines} = $params->{coloring} = 1;
@@ -501,7 +474,7 @@ sub _no_such_module {
   my ($self, $module) = @_;
 
   $module =~ s!/!::!g;
-  $module =~ s/([&<>"])/$escape_entity{$1}/g;
+  $module = Plack::Util::encode_html($module);
   return  <<__EOHTML__;
 <html>
   <head>
@@ -723,10 +696,10 @@ sub get_abstract {
 
 
 sub main_toc {
-  my ($self) = @_;
+  my ($self, $req) = @_;
 
   # initial page to open
-  my $ini = $self->{params}{open};
+  my $ini        = $req->parameters->{open};
   my $select_ini = $ini ? "selectToc('$ini');" : "";
 
   # perlfunc entries in JSON format for the DHTML autocompleter
@@ -980,9 +953,9 @@ __EOHTML__
 #----------------------------------------------------------------------
 
 sub dispatch_search {
-  my ($self) = @_;
+  my ($self, $req) = @_;
 
-  my $params = $self->{params};
+  my $params = $req->parameters;
   my $source = $params->{source};
   my $method = {perlfunc      => 'perlfunc',
                 perlvar       => 'perlvar',
@@ -1047,12 +1020,11 @@ __EOHTML__
 
 
 
-my @_perlvar_items; # simple-minded cache
-
 sub perlvar_items {
   my ($self) = @_;
 
-  unless (@_perlvar_items) {
+  # lazily compute at first request; then store in $self
+  unless ($self->{perlvar_items}) {
 
     # get items defining variables
     my ($varpod) = $self->find_source("perlvar")
@@ -1065,12 +1037,13 @@ sub perlvar_items {
     foreach my $item (@items) {
       push @$tmp, $item;
       if ($item->content . "") { # force stringification
-        push @_perlvar_items, $tmp;
+        push @{$self->{perlvar_items}}, $tmp;
         $tmp = [];
       }
     }
   };
-  return @_perlvar_items;
+
+  return @{$self->{perlvar_items}};
 }
 
 
@@ -1158,7 +1131,7 @@ sub mk_view {
   my ($self, %args) = @_;
 
   my $view = Pod::POM::View::HTML::_PerlDoc->new(
-    root_url        => $self->{root_url},
+    root_url => $self->{root_url},
     %args
    );
 
@@ -1189,34 +1162,12 @@ sub send_content {
   my $modified  = gmtime $args->{mtime};
   my $code      = $args->{code} || 200;
 
-  my $r = $self->{response};
-  for (ref $r) {
 
-    /^Apache/ and do {
-      require Apache2::Response;
-      $r->content_type($mime_type);
-      $r->set_content_length($length);
-      $r->set_last_modified($args->{mtime}) if $args->{mtime};
-      $r->print($args->{content});
-      return;
-    };
-
-    /^HTTP::Response/ and do {
-      $r->code($code);
-      $r->header(Content_type   => $mime_type,
-                 Content_length => $length);
-      $r->header(Last_modified  => $modified) if $args->{mtime};
-      $r->add_content($args->{content});
-      return;
-    };
-
-    # otherwise (cgi-bin)
-    my $headers = "Content-type: $mime_type\nContent-length: $length\n";
-    $headers .= "Last-modified: $modified\n" if  $args->{mtime};
-    binmode(STDOUT);
-    print "$headers\n$args->{content}";
-    return;
-  }
+  my $headers = {Content_type   => $mime_type,
+                 Content_length => $length};
+  $headers->{Last_modified} = $modified if $args->{mtime};
+  my $r = Plack::Response->new($code, $headers, $args->{content});
+  $r->finalize;
 }
 
 
@@ -1238,8 +1189,8 @@ sub generic_node {
   $args{label_tag}   ||= $default_label_tag;
   $args{label_class} ||= "TN_label";
   if ($args{abstract}) {
-    $args{abstract} =~ s/([&<>"])/$escape_entity{$1}/g;
-    $label_attrs .= qq{ title="$args{abstract}"};
+    my $abstract = Plack::Util::encode_html($args{abstract});
+    $label_attrs .= qq{ title="$abstract"};
   }
   return qq{<div class="$args{class}"$args{attrs}>}
        .    qq{<$args{label_tag} class="$args{label_class}"$label_attrs>}
@@ -1308,10 +1259,13 @@ package Pod::POM::View::HTML::_PerlDoc; # View package
 #======================================================================
 use strict;
 use warnings;
-no warnings qw/uninitialized/;
-use base    qw/Pod::POM::View::HTML/;
-use POSIX   qw/strftime/;              # date formatting
+no warnings         qw/uninitialized/;
+use base            qw/Pod::POM::View::HTML/;
+use POSIX           qw/strftime/;              # date formatting
 use List::MoreUtils qw/firstval/;
+use Plack::Util;
+
+
 
 # SUPER::view_seq_text tries to find links automatically ... but is buggy
 # for URLs that contain '$' or ' '. So we disable it, and only consider
@@ -1576,7 +1530,7 @@ sub view_verbatim {
     $text = $self->$method($text);
   }
   else {
-    $text =~ s/([&<>"])/$Pod::POM::Web::escape_entity{$1}/g;
+    $text = Plack::Util::encode_html($text);
   }
 
   # hyperlinks to other modules
@@ -1603,8 +1557,7 @@ sub PPI_coloring {
     return $html;
   }
   else { # PPI failed to parse that text
-    $text =~ s/([&<>"])/$Pod::POM::Web::escape_entity{$1}/g;
-    return $text;
+    return Plack::Util::encode_html($text);
   }
 }
 
