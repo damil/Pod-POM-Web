@@ -6,31 +6,46 @@ use warnings;
 use 5.008;
 no warnings 'uninitialized';
 
+use parent 'Plack::Component';              # web app based on Plack architecture
+use Plack::Request;                         # Plack API for an HTTP request
+use Plack::Response;                        # Plack API for an HTTP response
+use Plack::Util;                            # encode_html()
 use Pod::POM 0.25;                          # parsing Pod
 use List::Util      qw/max/;                # maximum
-use List::MoreUtils qw/uniq firstval any/;
+use List::MoreUtils qw/uniq firstval any/;  # list utilities
 use Module::CoreList;                       # asking if a module belongs to Perl core
 use MIME::Types;                            # translate file extension into MIME type
 use Alien::GvaScript 1.021000;              # javascript files
-use Config;                                 # where are the script directories
-use Getopt::Long    qw/GetOptions/;         # parsing options from command-line
-use Module::Metadata 1.000033;              # get version number from module
-use Encode          qw/decode encode_utf8/;
-use Encode::Detect;
+use Config;                                 # where are the perl script directories
 
-use parent 'Plack::Component';
-use Plack::Request;
-use Plack::Response;
-use Plack::Util;
+use Module::Metadata 1.000033;              # get version number from module
+use Encode          qw/decode encode_utf8/; # utf8 encoding
+use Encode::Detect;                         # automatic encoding recognition
+use Params::Validate qw/validate_with SCALAR ARRAYREF/; # check validity of parameters
+
+# other modules that may be required dynamically :
+# Getopt::Long, PPI::HTML, ActiveState::Scineplex, Pod::POM::Web::Indexer, Plack::Runner
+
 
 #----------------------------------------------------------------------
-# globals
+# GLOBAL VARIABLES
 #---------------------------------------------------------------------
 
 our $VERSION = '1.24';
 
-# some subdirs never contain Pod documentation
-my @ignore_toc_dirs = qw/auto unicore/;
+# parameters for instantiating the module. They could also come from cmd-line options
+my %params_for_new = (
+  page_title  => {type => SCALAR  , optional => 1},
+  script_name => {type => SCALAR  , optional => 1},
+  module_dirs => {type => ARRAYREF, optional => 1},
+  script_dirs => {type => ARRAYREF, optional => 1},
+ );
+my @params_for_getopt = (
+  'page_title|title=s',
+  'module_dirs|mdirs=s@{,}',
+  'script_dirs|sdirs=s@{,}',
+);
+
 
 # directories for modules -- filter @INC (we don't want '.', nor server_root added by mod_perl)
 my $server_root = eval {Apache2::ServerUtil::server_root()} || "";
@@ -38,8 +53,12 @@ our                # because accessed from Pod::POM::Web::Indexer
   @default_module_dirs = grep {!/^\./ && $_ ne $server_root} @INC;
 
 # directories for executable perl scripts
-my @config_script_dirs  = qw/sitescriptexp vendorscriptexp scriptdirexp/;
-my @default_script_dirs = grep {$_} @Config{@config_script_dirs};
+my @default_script_dirs = grep {$_}
+                          @Config{qw/sitescriptexp vendorscriptexp scriptdirexp/};
+
+# some subdirs never contain Pod documentation
+my @ignore_toc_dirs = qw/auto unicore/;
+
 
 # syntax coloring (optional)
 my $coloring_package
@@ -65,130 +84,106 @@ my @podfilters = (
 
 
 #----------------------------------------------------------------------
-# import : just export the "server" function if called from command-line
+# CLASS METHODS
 #----------------------------------------------------------------------
 
+# AT IMPORT : export "server" or "app" function so that they can be called from command-line
 sub import {
   my $class = shift;
   my ($package, $filename) = caller;
 
+  # support for launching from cmd-line
+  no strict 'refs';
+
+  # 1st way:  perl -MPod::POM::Web -e server
   if ($package eq 'main' and $filename eq '-e') {
-    no strict 'refs';
-    *{'main::server'} = sub {
+    *{'main::server'} = sub { $class->server };
+  }
 
-      my $options ||= $class->_options_from_cmd_line;
-      my $app = $class->new($options)->to_app;
-
-
-      require Plack::Runner;
-      my $runner = Plack::Runner->new;
-      # $runner->parse_options(@ARGV);
-      $runner->run($app);
-    }
+  # 2nd way : plackup -MPod::POM::Web -e app
+  elsif($package eq 'Plack::Runner') {
+    *{'Plack::Runner::app'} = sub {$class->app};
   }
 }
 
 
+# launch the app via Plack::Runner when called from perl cmd-line
+sub server {
+  my $class = shift;
 
-#----------------------------------------------------------------------
-# CLASS METHODS -- main entry point
-#----------------------------------------------------------------------
-
-sub call { # request dispatcher (see L<Plack::Component>)
-  my ($self, $env) = @_;
-
-  my $req = Plack::Request->new($env);
-
-  $self->{root_url} = $req->script_name if not exists $self->{root_url};
-
-  $self->dispatch_request($req);
+  require Plack::Runner;
+  my $runner = Plack::Runner->new;
+  $runner->parse_options(@ARGV);
+  $runner->run($class->app);
 }
 
 
-sub show_error {
-  my ($self, $msg) = @_;
+# return an app suitable to run under Plack::Runner
+sub app {
+  my $class = shift;
 
-  return [<<__EOHTML__];
-<!doctype html>
-<html>
-<head><title>500 Server Error</title></head>
-<body><h1>500 Server Error</h1>
-<pre>
-$msg
-</pre>
-</body>
-__EOHTML__
+  # get options from command-line
+  require Getopt::Long;
+  my $parser = Getopt::Long::Parser->new(config => [qw/pass_through/]);
+  $parser->getoptions(\my %options, @params_for_getopt);
+
+  # create a Pod::POM::Web instance and make it into a Plack app
+  my $obj = $class->new(%options);
+  return $obj->to_app;
 }
 
-
-
-
-
-
-sub _options_from_cmd_line {
-  GetOptions \my %options,
-    'page_title|title=s',
-    'module_dirs|mdirs=s@{,}',
-    'script_dirs|sdirs=s@{,}',
-    ;
-
-  push @{$options{module_dirs}}, @default_module_dirs;
-  push @{$options{script_dirs}}, @default_script_dirs;
-
-  return \%options;
-}
-
-sub OLD_handler : method  {  # TODO : make it work for Apache2
-  
-  my ($class, $request, $response, $options) = @_;
-
-  my $handler_obj = $class->new($request, $response, $options);
-
-  eval { $handler_obj->dispatch_request(); 1}
-    or do {
-      my $error = $@;
-      if ($error =~ /No file for '(.*)'/) {
-        $handler_obj->send_content({content => $handler_obj->_no_such_module($1),
-                                    code    => 403});
-      }
-      else {
-        $handler_obj->send_content({content => $error,
-                                    code    => 500});
-      }
-  };
-
-  return 0; # Apache2::Const::OK;
-}
 
 
 #----------------------------------------------------------------------
-# CONSTRUCTOR 
+# CONSTRUCTOR AND ACCESSORS
 #----------------------------------------------------------------------
 
 sub new {
-  my ($class, %options) = @_;
+  my $class = shift;
 
-  my $cmd_opts = _options_from_cmd_line();
-  my $self = bless {%$cmd_opts, %options}, $class;
-  return $self;
+  # validate input parameters
+  my $self = validate_with(
+    params      => \@_,
+    spec        => \%params_for_new,
+    allow_extra => 0,
+   );
+
+  # default values
+  $self->{page_title} ||= 'Perl documentation';
+  push @{$self->{module_dirs}}, @default_module_dirs;
+  push @{$self->{script_dirs}}, @default_script_dirs;
+
+  # create instance
+  bless $self, $class;
 }
 
-
-#----------------------------------------------------------------------
-# INSTANCE METHODS for the "handler object"
-#----------------------------------------------------------------------
-
-
+# simple-minded accessors
 sub module_dirs {@{shift->{module_dirs}}}
 sub script_dirs {@{shift->{script_dirs}}}
 
-sub dispatch_request {
-  my ($self, $req) = @_;
+
+
+#----------------------------------------------------------------------
+# MAIN ENTRY POINT
+#----------------------------------------------------------------------
+
+# request dispatcher (see L<Plack::Component>)
+sub call {
+  my ($self, $env) = @_;
+
+  # plack request object
+  my $req = Plack::Request->new($env);
+
+  # at first request, register the script name
+  $self->{root_url} = $req->script_name if not exists $self->{root_url};
+
+  # dispatching will be based on path_info
   my $path_info = $req->path_info;
 
   # security check : no outside directories
   $path_info =~ m[(\.\.|//|\\|:)] and die "illegal path: $path_info";
 
+  # dispatch
   $path_info =~ s[^/][] or return $self->index_frameset($req);
   for ($path_info) {
     /^$/               and return $self->index_frameset($req);
@@ -223,7 +218,7 @@ sub index_frameset{
   my $ini_toc     = $ini ? "toc?open=$ini" : "toc";
 
   # HTML title
-  my $title = Plack::Util::encode_html($self->{page_title} || 'Perl documentation');
+  my $title = Plack::Util::encode_html($self->{page_title});
 
   return $self->send_html(<<__EOHTML__);
 <html>
@@ -337,7 +332,8 @@ sub serve_pod {
   $path =~ s[::][/]g; # just in case, if called as /perldoc/Foo::Bar
 
   # if several sources, will be first *.pod, then *.pm
-  my @sources = $self->find_source($path) or die "No file for '$path'";
+  my @sources = $self->find_source($path)
+    or return $self->_no_such_module($path);
   my $mtime   = max map {(stat $_)[9]} @sources;
   my $content = $path =~ /\bperltoc\b/
                    ? $self->fake_perltoc
@@ -475,7 +471,7 @@ sub _no_such_module {
 
   $module =~ s!/!::!g;
   $module = Plack::Util::encode_html($module);
-  return  <<__EOHTML__;
+  my $html =  <<__EOHTML__;
 <html>
   <head>
     <title>$module not found</title>
@@ -485,11 +481,13 @@ sub _no_such_module {
     <p>
       The module <code>$module</code> could not be found on this server.
       It may not be installed locally. Please try 
-      <a href='https://metacpan.org/pod/$module'>$module on Metacpan</a>.
+      <a href='https://metacpan.org/pod/$module' target='_blank'>$module on Metacpan</a>.
     </p>
   </body>
 </html>
 __EOHTML__
+
+  $self->send_html($html);
 }
 
 
@@ -910,7 +908,7 @@ sub main_toc {
 <div id='toc_frame_top'>
 <div class="small_title"
      style="text-align:center;border-bottom: 1px solid">
-Perl Documentation
+$self->{page_title}
 </div>
 <div style="text-align:right">
 <a href="Pod/POM/Web/Help" class="small_title">Help</a>
@@ -1015,8 +1013,6 @@ sub perlfunc {
 </body>
 __EOHTML__
 }
-
-
 
 
 
@@ -1147,7 +1143,10 @@ sub send_html {
   $html =~ s[<head>]
             [<head>\n<meta http-equiv="X-UA-Compatible" content="IE=edge">];
 
-  $self->send_content({content => encode_utf8($html), code => 200, mtime => $mtime, charset => 'UTF-8'});
+  $self->send_content({content => encode_utf8($html),
+                       code    => 200,
+                       mtime   => $mtime,
+                       charset => 'UTF-8'});
 }
 
 
