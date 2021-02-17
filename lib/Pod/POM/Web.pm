@@ -87,20 +87,18 @@ my @podfilters = (
 # CLASS METHODS
 #----------------------------------------------------------------------
 
-# AT IMPORT : export "server" or "app" function so that they can be called from command-line
+# export functions to be called from command-line option -e
 sub import {
   my $class = shift;
   my ($package, $filename) = caller;
-
-  # support for launching from cmd-line
   no strict 'refs';
 
-  # 1st way:  perl -MPod::POM::Web -e server
+  # export "server" -- for "perl -MPod::POM::Web -e server"
   if ($package eq 'main' and $filename eq '-e') {
     *{'main::server'} = sub { $class->server };
   }
 
-  # 2nd way : plackup -MPod::POM::Web -e app
+  # export "app" --- for "plackup -MPod::POM::Web -e app"
   elsif($package eq 'Plack::Runner') {
     *{'Plack::Runner::app'} = sub {$class->app};
   }
