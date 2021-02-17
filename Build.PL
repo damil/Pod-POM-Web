@@ -11,6 +11,7 @@ my $builder = Module::Build->new(
       'perl'                 => 5.008,
       'parent'               => 0,
       'Alien::GvaScript'     => 1.021000,
+      'CPAN::Common::Index::Mux::Ordered' => 0,
       'Encode'               => 0,
       'Encode::Detect'       => 0,
       'Pod::POM'             => 0.25,

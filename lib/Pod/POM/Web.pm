@@ -22,6 +22,9 @@ use Module::Metadata 1.000033;              # get version number from module
 use Encode          qw/decode encode_utf8/; # utf8 encoding
 use Encode::Detect;                         # automatic encoding recognition
 use Params::Validate qw/validate_with SCALAR ARRAYREF/; # check validity of parameters
+use CPAN::Common::Index::Mux::Ordered;
+
+
 
 # other modules that may be required dynamically :
 # Getopt::Long, PPI::HTML, ActiveState::Scineplex, Pod::POM::Web::Indexer, Plack::Runner
@@ -68,9 +71,6 @@ my $coloring_package
 
 # full-text indexing (optional)
 my $no_indexer = eval {require Pod::POM::Web::Indexer} ? 0 : $@;
-
-# CPAN latest version info (tentative, but disabled because CPAN is too slow)
-my $has_cpan = 0; # eval {require CPAN};
 
 # A sequence of optional filters to apply to the source code before
 # running it through Pod::POM. Source code is passed in $_[0] and
@@ -150,6 +150,17 @@ sub new {
   $self->{page_title} ||= 'Perl documentation';
   push @{$self->{module_dirs}}, @default_module_dirs;
   push @{$self->{script_dirs}}, @default_script_dirs;
+
+  # CPAN index
+  my @cpan_indices = (MetaDB       => {});
+  if (0 and
+        my $local_minicpan = eval {require CPAN::Mini;
+                                 my %conf = CPAN::Mini->read_config;
+                                 $conf{local}}) {
+    unshift @cpan_indices,
+      LocalPackage => { source => "$local_minicpan/modules/02packages.details.txt.gz" };
+  }
+  $self->{cpan_index} = CPAN::Common::Index::Mux::Ordered->assemble(@cpan_indices);
 
   # create instance
   bless $self, $class;
@@ -329,7 +340,7 @@ sub serve_pod {
   my ($self, $path) = @_;
   $path =~ s[::][/]g; # just in case, if called as /perldoc/Foo::Bar
 
-  # if several sources, will be first *.pod, then *.pm
+  # find file(s) corresponding to $path
   my @sources = $self->find_source($path)
     or return $self->_no_such_module($path);
   my $mtime   = max map {(stat $_)[9]} @sources;
@@ -337,14 +348,11 @@ sub serve_pod {
                    ? $self->fake_perltoc
                    : $self->slurp_file($sources[0], ":crlf");
 
-  (my $mod_name = $path) =~ s[/][::]g;
-  my $version = @sources > 1
-    ? $self->parse_version($self->slurp_file($sources[-1], ":crlf"), $mod_name)
-    : $self->parse_version($content, $mod_name);
+  # module version
+  my $version = firstval {$_} map {$self->parse_version($_)} grep {/\.pm$/} @sources;
 
-  for my $filter (@podfilters) {
-    $filter->($content);
-  }
+  # filter contents
+  $_->($content) foreach @podfilters;
 
   # special handling for perlfunc: change initial C<..> to hyperlinks
   if ($path =~ /\bperlfunc$/) {
@@ -353,6 +361,8 @@ sub serve_pod {
                  [$1 . $sub->($2) . $3]es;
   }
 
+  # assemble information to be passed to the view
+  (my $mod_name = $path) =~ s[/][::]g;
   my $parser = Pod::POM->new;
   my $pom = $parser->parse_text($content) or die $parser->error;
   my $view = $self->mk_view(version         => $version,
@@ -361,6 +371,7 @@ sub serve_pod {
                             mod_name        => $mod_name,
                             syntax_coloring => $coloring_package);
 
+  # generate HTML
   my $html = $view->print($pom);
 
   # again special handling for perlfunc : ids should be just function names
@@ -439,7 +450,7 @@ sub find_source {
     return;
   }
 
-  # otherwise, serving a module
+  # otherwise, serving a module -- first return .pod, then .pm
   foreach my $prefix ($self->module_dirs) {
     my @found = grep  {-f} ("$prefix/$path.pod",
                             "$prefix/$path.pm",
@@ -1126,6 +1137,7 @@ sub mk_view {
 
   my $view = Pod::POM::View::HTML::_PerlDoc->new(
     root_url => $self->{root_url},
+    ppw => $self,
     %args
    );
 
@@ -1222,11 +1234,9 @@ sub slurp_file {
 
 
 sub parse_version {
-  my ($self, $content, $mod_name) = @_;
+  my ($self, $file_name) = @_;
 
-  # filehandle on string content
-  open my $fh, "<", \$content;
-  my $mm = Module::Metadata->new_from_handle($fh, $mod_name)
+  my $mm = Module::Metadata->new_from_file($file_name)
     or die "couldn't create Module::Metadata";
 
   return $mm->version;
@@ -1385,20 +1395,16 @@ sub view_pod {
     $orig_version &&= "v. $orig_version ";
     $core_release &&= "; ${orig_version}entered Perl core in $core_release";
 
+    # latest CPAN version
+    my $cpan_package   = $self->{ppw}{cpan_index}->search_packages( { package => $mod_name } );
+    my $cpan_version   = $cpan_package ? $cpan_package->{version} : undef;
+    my $latest_version = $cpan_version ? " (v. $cpan_version)" : "";
+
     # hyperlinks to various internet resources
     $module_refs = qq{<br>
      <a href="https://metacpan.org/pod/$mod_name"
-        target="_blank">meta::cpan</a>
+        target="_blank">meta::cpan$latest_version</a>
     };
-
-    if ($has_cpan) {
-      my $mod = CPAN::Shell->expand("Module", $mod_name);
-      if ($mod) {
-        my $cpan_version = $mod->cpan_version;
-        $cpan_info = "; CPAN has v. $cpan_version"
-          if $cpan_version ne $self->{version};
-      }
-    }
   }
 
   my $toc = $self->make_toc($pom, 0);
