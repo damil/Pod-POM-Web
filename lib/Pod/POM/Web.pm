@@ -184,7 +184,7 @@ sub call {
   my $req = Plack::Request->new($env);
 
   # at first request, register the script name
-  $self->{root_url} = $req->script_name if not exists $self->{root_url};
+  $self->{script_name} = $req->script_name if not exists $self->{script_name};
 
   # dispatching will be based on path_info
   my $path_info = $req->path_info;
@@ -233,8 +233,8 @@ sub index_frameset{
 <html>
   <head><title>$title</title></head>
   <frameset cols="25%, 75%">
-    <frame name="tocFrame"     src="$self->{root_url}/$ini_toc">
-    <frame name="contentFrame" src="$self->{root_url}/$ini_content">
+    <frame name="tocFrame"     src="$self->{script_name}/$ini_toc">
+    <frame name="contentFrame" src="$self->{script_name}/$ini_content">
   </frameset>
 </html>
 __EOHTML__
@@ -288,15 +288,15 @@ window.onload = function () {window.print()};
 __EOHTML__
 
   my $doc_link = $params->{print} ? "" : <<__EOHTML__;
-<a href="$self->{root_url}/$path" style="float:right">Doc</a>
+<a href="$self->{script_name}/$path" style="float:right">Doc</a>
 __EOHTML__
 
   my $html = <<__EOHTML__;
 <html>
 <head>
   <title>Source of $path</title>
-  <link href="$self->{root_url}/Alien/GvaScript/lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="$self->{root_url}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+  <link href="$self->{script_name}/Alien/GvaScript/lib/GvaScript.css" rel="stylesheet" type="text/css">
+  <link href="$self->{script_name}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
   <style>
     PRE {border: none; background: none}
     FORM {float: right; font-size: 70%; border: 1px solid}
@@ -351,6 +351,12 @@ sub serve_pod {
   # module version
   my $version = firstval {$_} map {$self->parse_version($_)} grep {/\.pm$/} @sources;
 
+  # latest CPAN version
+  (my $mod_name = $path) =~ s[/][::]g;
+  my $cpan_package = $self->{cpan_index}->search_packages( { package => $mod_name } );
+  my $cpan_version = $cpan_package ? $cpan_package->{version} : undef;
+
+
   # filter contents
   $_->($content) foreach @podfilters;
 
@@ -362,13 +368,13 @@ sub serve_pod {
   }
 
   # assemble information to be passed to the view
-  (my $mod_name = $path) =~ s[/][::]g;
   my $parser = Pod::POM->new;
   my $pom = $parser->parse_text($content) or die $parser->error;
   my $view = $self->mk_view(version         => $version,
                             mtime           => $mtime,
                             path            => $path,
                             mod_name        => $mod_name,
+                            cpan_version    => $cpan_version,
                             syntax_coloring => $coloring_package);
 
   # generate HTML
@@ -383,7 +389,7 @@ sub serve_pod {
   if ($path =~ /\bperl$/) {
     my $sub = sub {my $txt = shift;
                    $txt =~ s[(perl\w+)]
-                            [<a href="$self->{root_url}/$1">$1</a>]g;
+                            [<a href="$self->{script_name}/$1">$1</a>]g;
                    return $txt};
     $html =~ s[(<pre.*?</pre>)][$sub->($1)]egs;
   }
@@ -746,12 +752,12 @@ sub main_toc {
 <html>
 <head>
   <base target="contentFrame">
-  <link href="$self->{root_url}/Alien/GvaScript/lib/GvaScript.css"
+  <link href="$self->{script_name}/Alien/GvaScript/lib/GvaScript.css"
         rel="stylesheet" type="text/css">
-  <link href="$self->{root_url}/Pod/POM/Web/lib/PodPomWeb.css"
+  <link href="$self->{script_name}/Pod/POM/Web/lib/PodPomWeb.css"
         rel="stylesheet" type="text/css">
-  <script src="$self->{root_url}/Alien/GvaScript/lib/prototype.js"></script>
-  <script src="$self->{root_url}/Alien/GvaScript/lib/GvaScript.js"></script>
+  <script src="$self->{script_name}/Alien/GvaScript/lib/prototype.js"></script>
+  <script src="$self->{script_name}/Alien/GvaScript/lib/GvaScript.js"></script>
   <script>
     var treeNavigator;
     var perlfuncs = $json_funcs;
@@ -1013,10 +1019,10 @@ sub perlfunc {
   return $self->send_html(<<__EOHTML__);
 <html>
 <head>
-  <link href="$self->{root_url}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+  <link href="$self->{script_name}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
 </head>
 <body>
-<h2>Extract from <a href="$self->{root_url}/perlfunc">perlfunc</a></h2>
+<h2>Extract from <a href="$self->{script_name}/perlfunc">perlfunc</a></h2>
 
 <ul>@li_items</ul>
 </body>
@@ -1065,10 +1071,10 @@ sub perlvar {
   return $self->send_html(<<__EOHTML__);
 <html>
 <head>
-  <link href="$self->{root_url}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+  <link href="$self->{script_name}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
 </head>
 <body>
-<h2>Extract from <a href="$self->{root_url}/perlvar">perlvar</a></h2>
+<h2>Extract from <a href="$self->{script_name}/perlvar">perlvar</a></h2>
 
 <ul>@li_items</ul>
 </body>
@@ -1103,10 +1109,10 @@ sub perlfaq {
   return $self->send_html(<<__EOHTML__);
 <html>
 <head>
-  <link href="$self->{root_url}/Alien/GvaScript/lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="$self->{root_url}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
-  <script src="$self->{root_url}/Alien/GvaScript/lib/prototype.js"></script>
-  <script src="$self->{root_url}/Alien/GvaScript/lib/GvaScript.js"></script>
+  <link href="$self->{script_name}/Alien/GvaScript/lib/GvaScript.css" rel="stylesheet" type="text/css">
+  <link href="$self->{script_name}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+  <script src="$self->{script_name}/Alien/GvaScript/lib/prototype.js"></script>
+  <script src="$self->{script_name}/Alien/GvaScript/lib/GvaScript.js"></script>
   <script>
     var treeNavigator;
     function setup() {
@@ -1116,7 +1122,7 @@ sub perlfaq {
    </script>
 </head>
 <body>
-<h1>Extracts from <a href="$self->{root_url}/perlfaq">perlfaq</a></h1><br>
+<h1>Extracts from <a href="$self->{script_name}/perlfaq">perlfaq</a></h1><br>
 <em>searching for '$faq_entry' : $n_answers answers</em><br><br>
 <div id='TN_tree'>
 $answers
@@ -1136,7 +1142,7 @@ sub mk_view {
   my ($self, %args) = @_;
 
   my $view = Pod::POM::View::HTML::_PerlDoc->new(
-    root_url => $self->{root_url},
+    script_name => $self->{script_name},
     ppw => $self,
     %args
    );
@@ -1329,7 +1335,7 @@ sub view_seq_link {
 sub view_seq_link_transform_path {
     my($self, $page) = @_;
     $page =~ s[::][/]g;
-    return "$self->{root_url}/$page";
+    return "$self->{script_name}/$page";
 }
 
 
@@ -1366,7 +1372,7 @@ sub view_pod {
   # compute view
   my $content = $pom->content->present($self)
     or return "no documentation found in <tt>$self->{path}</tt><br>\n"
-            . "<a href='$self->{root_url}/source/$self->{path}'>Source</a>";
+            . "<a href='$self->{script_name}/source/$self->{path}'>Source</a>";
 
   # parse name and description
   my $name_h1   = firstval {$_->title =~ /^(NAME|TITLE)\b/} $pom->head1();
@@ -1396,9 +1402,7 @@ sub view_pod {
     $core_release &&= "; ${orig_version}entered Perl core in $core_release";
 
     # latest CPAN version
-    my $cpan_package   = $self->{ppw}{cpan_index}->search_packages( { package => $mod_name } );
-    my $cpan_version   = $cpan_package ? $cpan_package->{version} : undef;
-    my $latest_version = $cpan_version ? " (v. $cpan_version)" : "";
+    my $latest_version = $self->{cpan_version} ? " (v. $self->{cpan_version})" : "";
 
     # hyperlinks to various internet resources
     $module_refs = qq{<br>
@@ -1413,10 +1417,10 @@ sub view_pod {
 <html>
 <head>
   <title>$name</title>
-  <link href="$self->{root_url}/Alien/GvaScript/lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="$self->{root_url}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
-  <script src="$self->{root_url}/Alien/GvaScript/lib/prototype.js"></script>
-  <script src="$self->{root_url}/Alien/GvaScript/lib/GvaScript.js"></script>
+  <link href="$self->{script_name}/Alien/GvaScript/lib/GvaScript.css" rel="stylesheet" type="text/css">
+  <link href="$self->{script_name}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+  <script src="$self->{script_name}/Alien/GvaScript/lib/prototype.js"></script>
+  <script src="$self->{script_name}/Alien/GvaScript/lib/GvaScript.js"></script>
   <script>
     var treeNavigator;
     function setup() {
@@ -1473,7 +1477,7 @@ sub view_pod {
    <span id="title_descr">$description</span>
 
    <span id="ref_box">
-   <a href="$self->{root_url}/source/$self->{path}">Source</a>
+   <a href="$self->{script_name}/source/$self->{path}">Source</a>
    $module_refs
    </span>
 
