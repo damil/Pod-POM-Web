@@ -1679,43 +1679,50 @@ parsing pod links and translating them into hypertext links
 
 =item *
 
-links to CPAN sites
+links to MetaCPAN
 
 =back
 
 The application may be hosted by an existing Web server, or otherwise
-may run its own builtin Web server.
+may run its own builtin Web server. Instructions for launching the application
+are given in the next section.
 
-The DHTML code for navigating through documentation trees requires a
-modern browser. So far it has been tested on Microsoft Internet
-Explorer 8.0, Firefox 3.5, Google Chrome 3.0 and Safari 4.0.4.
-
-=head1 USAGE
-
-Usage is described in a separate document
+Usage of the application is described in a separate document
 L<Pod::POM::Web::Help>.
 
-=head1 INSTALLATION
+=head1 STARTING THE WEB APPLICATION
 
-=head2 Starting the Web application
+=head2 Preamble : Plack architecturen
 
-Once the code is installed (most probably through
-L<CPAN> or L<CPANPLUS>), you have to configure
-the web server :
+The application is built on top of the well-known L<Plack> middleware for 
+web applications. Therefore it can be integrated easily in various Web
+architectures -- see L<???> for how to to so. 
 
-=head3 As a mod_perl service
 
-If you have Apache2 with mod_perl 2.0, then edit your
-F<perl.conf> as follows :
 
-  PerlModule Apache2::RequestRec
-  PerlModule Apache2::RequestIO
-  <Location /perldoc>
-        SetHandler modperl
-        PerlResponseHandler Pod::POM::Web->handler
-  </Location>
+=head2 Starting rom the command-line
 
-Then navigate to URL L<http://localhost/perldoc>.
+The simplest way to use this application is to start a process invoking
+the builtin HTTP server :
+
+  perl -MPod::POM::Web -e server
+
+This is useful if you have no other HTTP server, or if
+you want to run this module under the perl debugger.
+The server will listen at L<http://localhost:5000>.
+A different port may be specified  :
+
+  perl -MPod::POM::Web -e server -- -p 8888
+
+The internal implementation is based on L<Plack::Runner>, the same
+module that also supports the L<plackup> utility. All plackup options
+can also be used here -- see plackup's documentation.
+
+Another way to start the server is to call C<plackup> directly :
+
+  plackup -MPod::POM::Web -e app
+
+
 
 =head3 As a cgi-bin script
 
