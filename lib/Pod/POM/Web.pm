@@ -22,8 +22,7 @@ use Module::Metadata 1.000033;              # get version number from module
 use Encode          qw/decode encode_utf8/; # utf8 encoding
 use Encode::Detect;                         # automatic encoding recognition
 use Params::Validate qw/validate_with SCALAR ARRAYREF/; # check validity of parameters
-use CPAN::Common::Index::Mux::Ordered;
-
+use CPAN::Common::Index::Mux::Ordered;      # current CPAN version of a module
 
 
 # other modules that may be required dynamically :
@@ -131,11 +130,22 @@ sub app {
 }
 
 
+# backcompat : a class method to be used as a CGI script or as a modperl handler
+sub handler : method  {
+  my ($class, $r) = @_;
 
-#----------------------------------------------------------------------
-# CONSTRUCTOR AND ACCESSORS
-#----------------------------------------------------------------------
+  if (ref $r =~ /^Apache/) {
+    require Plack::Handler::Apache2;
+    Plack::Handler::Apache2->call_app($r, $class->app);
+  }
+  else {
+    require Plack::Handler::CGI;
+    Plack::Handler::CGI->new->run($class->app);
+  }
+}
 
+
+# constructor
 sub new {
   my $class = shift;
 
@@ -155,8 +165,8 @@ sub new {
   my @cpan_indices = (MetaDB       => {});
   if (0 and
         my $local_minicpan = eval {require CPAN::Mini;
-                                 my %conf = CPAN::Mini->read_config;
-                                 $conf{local}}) {
+                                   my %conf = CPAN::Mini->read_config;
+                                   $conf{local}}) {
     unshift @cpan_indices,
       LocalPackage => { source => "$local_minicpan/modules/02packages.details.txt.gz" };
   }
@@ -166,15 +176,14 @@ sub new {
   bless $self, $class;
 }
 
+
+#----------------------------------------------------------------------
+# INSTANCE METHODS
+#----------------------------------------------------------------------
+
 # simple-minded accessors
 sub module_dirs {@{shift->{module_dirs}}}
 sub script_dirs {@{shift->{script_dirs}}}
-
-
-
-#----------------------------------------------------------------------
-# MAIN ENTRY POINT
-#----------------------------------------------------------------------
 
 # request dispatcher (see L<Plack::Component>)
 sub call {
@@ -213,10 +222,14 @@ sub call {
     /\.(\w+)$/         and return $self->serve_file($path_info, $1);
 
     #otherwise
-    return $self->serve_pod($path_info);
+    return $self->serve_module($path_info);
   }
 }
 
+
+#----------------------------------------------------------------------
+# main frameset
+#----------------------------------------------------------------------
 
 sub index_frameset{
   my ($self, $req) = @_;
@@ -244,7 +257,7 @@ __EOHTML__
 
 
 #----------------------------------------------------------------------
-# serving a single file
+# serving a single file (POD, source code or raw content)
 #----------------------------------------------------------------------
 
 sub serve_source {
@@ -255,11 +268,16 @@ sub serve_source {
   # default (if not printing): line numbers and syntax coloring are on
   $params->{print} or  $params->{lines} = $params->{coloring} = 1;
 
-  my @files = $self->find_source($path) or die "No file for '$path'";
-  my $mtime = max map {(stat $_)[9]} @files;
+  # find the source file(s)
+  my @files = $path =~ s[^script/][] ? $self->find_script($path)
+                                     : $self->find_module($path)
+      or die "did not find source for '$path'";
 
+  # last modification
+  my $mtime = max map{(stat $_)[9]} @files;
+
+  # build text to display
   my $display_text;
-
   foreach my $file (@files) {
     my $text = decode("Detect", $self->slurp_file($file, ":raw"));
     $text =~ s/\r\n/\n/g;
@@ -321,12 +339,10 @@ __EOHTML__
 sub serve_file {
   my ($self, $path, $extension) = @_;
 
-  my $fullpath = firstval {-f $_} map {"$_/$path"} $self->module_dirs
-    or die "could not find $path";
-
-  my $mime_type = MIME::Types->new->mimeTypeOf($extension);
-  my $content = $self->slurp_file($fullpath, ":raw");
-  my $mtime   = (stat $fullpath)[9];
+  my ($fullpath) = $self->find_file(module_dirs => $path);
+  my $mime_type  = MIME::Types->new->mimeTypeOf($extension);
+  my $content    = $self->slurp_file($fullpath, ":raw");
+  my $mtime      = (stat $fullpath)[9];
   $self->send_content({
     content   => $content,
     mtime     => $mtime,
@@ -336,17 +352,14 @@ sub serve_file {
 
 
 
-sub serve_pod {
+sub serve_module {
   my ($self, $path) = @_;
   $path =~ s[::][/]g; # just in case, if called as /perldoc/Foo::Bar
 
   # find file(s) corresponding to $path
-  my @sources = $self->find_source($path)
+  my @sources = $self->find_module($path)
     or return $self->_no_such_module($path);
   my $mtime   = max map {(stat $_)[9]} @sources;
-  my $content = $path =~ /\bperltoc\b/
-                   ? $self->fake_perltoc
-                   : $self->slurp_file($sources[0], ":crlf");
 
   # module version
   my $version = firstval {$_} map {$self->parse_version($_)} grep {/\.pm$/} @sources;
@@ -356,6 +369,8 @@ sub serve_pod {
   my $cpan_package = $self->{cpan_index}->search_packages( { package => $mod_name } );
   my $cpan_version = $cpan_package ? $cpan_package->{version} : undef;
 
+  # POD content from the first file in list
+  my $content = $self->slurp_file($sources[0], ":crlf");
 
   # filter contents
   $_->($content) foreach @podfilters;
@@ -397,31 +412,12 @@ sub serve_pod {
   return $self->send_html($html, $mtime);
 }
 
-sub fake_perltoc {
-  my ($self) = @_;
-
-  return "=head1 NAME\n\nperltoc\n\n=head1 DESCRIPTION\n\n"
-       . "I<Sorry, this page cannot be displayed in HTML by Pod:POM::Web "
-       . "(too CPU-intensive). "
-       . "If you really need it, please consult the source, using the link "
-       . "in the top-right corner.>";
-}
-
 
 sub serve_script {
   my ($self, $path) = @_;
 
-  my $fullpath;
-
- DIR:
-  foreach my $dir ($self->script_dirs) {
-    foreach my $ext ("", ".pl", ".bat") {
-      $fullpath = "$dir/$path$ext";
-      last DIR if -f $fullpath;
-    }
-  }
-
-  $fullpath or die "no such script : $path";
+  my ($fullpath) = $self->find_script($path)
+    or die "no such script : $path";
 
   my $content = $self->slurp_file($fullpath, ":crlf");
   my $mtime   = (stat $fullpath)[9];
@@ -432,7 +428,7 @@ sub serve_script {
 
   my $parser = Pod::POM->new;
   my $pom    = $parser->parse_text($content) or die $parser->error;
-  my $view   = $self->mk_view(path            => "scripts/$path",
+  my $view   = $self->mk_view(path            => "script/$path",
                               mtime           => $mtime,
                               syntax_coloring => $coloring_package);
   my $html   = $view->print($pom);
@@ -441,31 +437,35 @@ sub serve_script {
 }
 
 
-sub find_source {
+
+
+sub find_module { 
   my ($self, $path) = @_;
+  return $self->find_file(module_dirs => "$path.pod", "$path.pm",
+                                         "pod/$path.pod", "pods/$path.pod");
+}
 
-  # serving a script ?    # TODO : factorize common code with serve_script
-  if ($path =~ s[^scripts/][]) {
-  DIR:
-    foreach my $dir ($self->script_dirs) {
-      foreach my $ext ("", ".pl", ".bat") {
-        -f "$dir/$path$ext" or next;
-        return ("$dir/$path$ext");
-      }
-    }
-    return;
+sub find_script {
+  my ($self, $path) = @_;
+  return $self->find_file(script_dirs => $path, "$path.pl", "path.bat");
+}
+
+sub find_file {
+  my ($self, $dirs_method, @file_candidates) = @_;
+
+  # try each dir in turn. The first successful search wins.
+  foreach my $dir ($self->$dirs_method) {
+    my @found = grep {-f} map {"$dir/$_"} @file_candidates;
+    return @found if @found; # returns a list because there could be both a *.pm and *.pod
   }
 
-  # otherwise, serving a module -- first return .pod, then .pm
-  foreach my $prefix ($self->module_dirs) {
-    my @found = grep  {-f} ("$prefix/$path.pod",
-                            "$prefix/$path.pm",
-                            "$prefix/pod/$path.pod",
-                            "$prefix/pods/$path.pod");
-    return @found if @found;
-  }
+  # empty list if nothing is found
   return;
 }
+
+
+
+
 
 
 sub pod2pom {
@@ -634,9 +634,9 @@ sub htmlize_perldocs {
   my $parser  = Pod::POM->new;
 
   # Pod/perl.pom Synopsis contains a classification of perl*.pod documents
-  my ($perlpod) = $self->find_source("perl", ":crlf")
-      or die "'perl.pod' does not seem to be installed on this system";
-  my $source  = $self->slurp_file($perlpod);
+  my ($perlpod) = $self->find_module("perl")
+    or die "'perl.pod' does not seem to be installed on this system";
+  my $source  = $self->slurp_file($perlpod, ":crlf");
   my $perlpom = $parser->parse_text($source) or die $parser->error;
 
   my $h1 =  (firstval {$_->title eq 'GETTING HELP'} $perlpom->head1)
@@ -973,7 +973,7 @@ sub dispatch_search {
   my $method = {perlfunc      => 'perlfunc',
                 perlvar       => 'perlvar',
                 perlfaq       => 'perlfaq',
-                modules       => 'serve_pod',
+                modules       => 'serve_module',
                 full_text     => 'full_text',
                 modlist       => 'modlist',
                 }->{$source}  or die "cannot search in '$source'";
@@ -995,7 +995,7 @@ sub perlfunc_items {
   my ($self) = @_;
 
   unless (@_perlfunc_items) {
-    my ($funcpod) = $self->find_source("perlfunc")
+    my ($funcpod) = $self->find_module("perlfunc")
       or die "'perlfunc.pod' does not seem to be installed on this system";
     my $funcpom   = $self->pod2pom($funcpod);
     my ($description) = grep {$_->title eq 'DESCRIPTION'} $funcpom->head1;
@@ -1038,7 +1038,7 @@ sub perlvar_items {
   unless ($self->{perlvar_items}) {
 
     # get items defining variables
-    my ($varpod) = $self->find_source("perlvar")
+    my ($varpod) = $self->find_module("perlvar")
       or die "'perlvar.pod' does not seem to be installed on this system";
     my $varpom   = $self->pod2pom($varpod);
     my @items    = _extract_items($varpom);
@@ -1094,7 +1094,7 @@ sub perlfaq {
  FAQ:
   for my $num (1..9) {
     my $faq = "perlfaq$num";
-    my ($faqpod) = $self->find_source($faq)
+    my ($faqpod) = $self->find_module($faq)
       or die "'$faq.pod' does not seem to be installed on this system";
     my $faqpom = $self->pod2pom($faqpod);
     my @questions = map {grep {$_->title =~ $regex} $_->head2} $faqpom->head1
@@ -1143,7 +1143,6 @@ sub mk_view {
 
   my $view = Pod::POM::View::HTML::_PerlDoc->new(
     script_name => $self->{script_name},
-    ppw => $self,
     %args
    );
 
@@ -1297,7 +1296,7 @@ sub view_seq_text {
 
 
 
-# SUPER::view_seq_link needs some adaptations
+# some adaptations to SUPER::view_seq_link
 sub view_seq_link {
     my ($self, $link) = @_;
 
@@ -1692,15 +1691,9 @@ L<Pod::POM::Web::Help>.
 
 =head1 STARTING THE WEB APPLICATION
 
-=head2 Preamble : Plack architecturen
-
-The application is built on top of the well-known L<Plack> middleware for 
-web applications. Therefore it can be integrated easily in various Web
-architectures -- see L<???> for how to to so. 
 
 
-
-=head2 Starting rom the command-line
+=head2 Starting from the command-line
 
 The simplest way to use this application is to start a process invoking
 the builtin HTTP server :
@@ -1714,14 +1707,18 @@ A different port may be specified  :
 
   perl -MPod::POM::Web -e server -- -p 8888
 
-The internal implementation is based on L<Plack::Runner>, the same
+Notice the double dash C<--> : this is used to separate options to the
+C<perl> command itself from options to C<Pod::POM::Web>.
+
+The internal implementation of C<server> is based on L<Plack::Runner>, the same
 module that also supports the L<plackup> utility. All plackup options
 can also be used here -- see plackup's documentation.
 
 Another way to start the server is to call C<plackup> directly :
 
-  plackup -MPod::POM::Web -e app
+  plackup -MPod::POM::Web -e app -p 8888
 
+In this case no double dash is required.
 
 
 =head3 As a cgi-bin script
@@ -1732,38 +1729,41 @@ containing :
 
   #!/path/to/perl
   use Pod::POM::Web;
+  use Plack::Handler::CGI;
+
+  my $app = Pod::POM::Web->new->to_app;
+  Plack::Handler::CGI->new->run($app);
+
+
+For historical reasons, the module also supports a simpler invocation,
+written as follows :
+
+  #!/path/to/perl
+  use Pod::POM::Web;
   Pod::POM::Web->handler;
 
 Make this script executable,
 then navigate to URL L<http://localhost/cgi-bin/perldoc>.
 
-The same can be done for running under mod_perl Registry
-(write the same script as above and put it in your
-Apache/perl directory). However, this does not make much sense,
-because if you have mod_perl Registry then you could as well
-run it as a basic mod_perl handler.
 
-=head3 As a standalone server
+=head3 Other Web architectures -- PSGI
 
-A third way to use this application is to start a process invoking
-the builtin HTTP server :
+The application is built on top of the well-known L<Plack> middleware for
+web applications, using the L<PSGI> protocol. Therefore it can be integrated 
+easily in various Web architectures. Write a F<.psgi> file as follows :
 
-  perl -MPod::POM::Web -e server
+  use Pod::POM::Web;
+  Pod::POM::Web->new->to_app;
 
-This is useful if you have no other HTTP server, or if
-you want to run this module under the perl debugger.
-The server will listen at L<http://localhost:8080>.
-A different port may be specified, in several ways :
+and invoke one of the Web server adapters under L<Plack::Handler>.
 
-  perl -MPod::POM::Web -e server 8888
-  perl -MPod::POM::Web -e server(8888)
-  perl -MPod::POM::Web -e server -- --port 8888
+
 
 =head2 Opening a specific initial page
 
 By default, the initial page displayed by the application
 is F<perl>. This can be changed by supplying an C<open> argument
-with the name of any documentation page: for example
+with the path to any documentation page: for example
 
   http://localhost:8080?open=Pod/POM/Web
   http://localhost:8080?open=perlfaq
@@ -1781,9 +1781,8 @@ want them to have distinct titles. This can be done like this:
 =head2 Note about security
 
 This application is intended as a power tool for Perl developers,
-not as an Internet application. It will give access to any file
-installed under your C<@INC> path or Apache C<lib/perl> directory
-(but not outside of those directories);
+not as an Internet application. It will give read access to any file
+installed under your C<@INC> path or Apache C<lib/perl> directory;
 so it is probably a B<bad idea>
 to put it on a public Internet server.
 
@@ -1818,6 +1817,16 @@ build the index as described in L<Pod::POM::Web::Indexer> documentation.
 =back
 
 
+=head3 Indication of the latest CPAN version
+
+When displaying a module, L<CPAN::Common::Index> is used to try to identify the
+latest CPAN version of that module. By default the information comes from
+C<http://cpanmetadb.plackperl.org/v1.0/>, but it requires an internet connection.
+If a local installation of L<CPAN::Mini> is available, this will be used as
+a primary source of information.
+
+
+
 =head1 HINTS TO POD AUTHORING
 
 =head2 Images
@@ -1841,15 +1850,49 @@ of course relative or absolute links can be used.
 
 
 
-=head1 METHODS
+=head1 CLASS METHODS
+
+=head2 import
+
+When the module is C<use>d from the command-line, the C<import> method
+automatically exports a C<server> function and an C<app> function to
+facilitate server startup.
+
+=head2 server
+
+Invokes L<Plack::Runner> to launch the server.
+
+=head2 app
+
+Creates an instance of the module and returns a L<PSGI> app.
+
+Options from the command-line that are not consumed by L<plackup>
+are read and passed to to the L<new> method. Available options are :
+
+=over
+
+=item C<page_title> or C<title>
+
+Title for this instance of the application.
+
+=item C<module_dirs> or C<mdirs>
+
+Additional directories to search for modules.
+
+=item C<script_dirs> or C<sdirs>
+
+Additional directories to search for scripts.
+
+=back
+
 
 =head2 handler
 
-  Pod::POM::Web->handler($request, $response, $options);
+Legacy class method, used by CGI scripts or mod_perl handlers.
 
-Public entry point for serving a request. Objects C<$request> and
-C<$response> are specific to the hosting HTTP server (modperl, HTTP::Daemon
-or cgi-bin); C<$options> is a hashref that can contain 
+=head2 new
+
+Constructor. May take the following arguments :
 
 =over 
 
@@ -1859,42 +1902,28 @@ for specifying the HTML title
 of the application (useful if you run several concurrent instances
 of Pod::POM::Web).
 
-=item C<port>
-
-the HTTP port listening for requests
-
 =item C<module_dirs>
 
 directories for searching for modules,
 in addition to the standard ones installed with your perl executable.
 
-
-=item <script_dirs>
+=item C<script_dirs>
 
 additional directories for searching for scripts
+
+=item C<script_name>
+
+URL fragment to be prepended before each internal hyperlink.
 
 =back
 
 
+=head1 INSTANCE METHODS
+
+Instance methods are not meant to be called by external clients.
+Some documentation can be found in the source code.
 
 
-=head2 server
-
-  Pod::POM::Web->server($port, $options);
-
-Starts the event loop for the builtin HTTP server.
-The C<$port> number can be given as optional first argument
-(default is 8080). The second argument C<$options> may be
-used to specify a page title (see L</"handler"> method above).
-
-This function is exported into the C<main::> namespace if perl
-is called with the C<-e> flag, so that you can write
-
-  perl -MPod::POM::Web -e server
-
-Options and port may be specified on the command line :
-
-  perl -MPod::POM::Web -e server -- --port 8888 --title FooBar
 
 =head1 ACKNOWLEDGEMENTS
 
@@ -1975,4 +2004,3 @@ under the same terms as Perl itself.
    - restrict to given set of paths/ modules
        - need to change toc (no perlfunc, no scripts/pragmas, etc)
        - treenav with letter entries or not ?
-  - port to Plack
