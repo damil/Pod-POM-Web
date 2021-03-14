@@ -369,22 +369,20 @@ sub serve_module {
   my $cpan_package = $self->{cpan_index}->search_packages( { package => $mod_name } );
   my $cpan_version = $cpan_package ? $cpan_package->{version} : undef;
 
-  # POD content from the first file in list
-  my $content = $self->slurp_file($sources[0], ":crlf");
 
-  # filter contents
-  $_->($content) foreach @podfilters;
-
-  # special handling for perlfunc: change initial C<..> to hyperlinks
+  my @special_podfilters;
+  # special handling for perlfunc: 
   if ($path =~ /\bperlfunc$/) {
-    my $sub = sub {my $txt = shift; $txt =~ s[C<(.*?)>][C<L</$1>>]g; $txt};
-    $content =~ s[(Perl Functions by Category)(.*?)(Alphabetical Listing)]
-                 [$1 . $sub->($2) . $3]es;
+    push @special_podfilters, sub {
+      $_[0] =~ s[(L<.*?\|/\w+)\s.*?>][$1>]g;
+    };
   }
 
+  # POD content from the first file in list
+  my $pom = $self->extract_POM($sources[0], @special_podfilters);
+
+
   # assemble information to be passed to the view
-  my $parser = Pod::POM->new;
-  my $pom = $parser->parse_text($content) or die $parser->error;
   my $view = $self->mk_view(version         => $version,
                             mtime           => $mtime,
                             path            => $path,
@@ -416,23 +414,21 @@ sub serve_module {
 sub serve_script {
   my ($self, $path) = @_;
 
+  # find file(s) corresponding to $path
   my ($fullpath) = $self->find_script($path)
     or die "no such script : $path";
 
-  my $content = $self->slurp_file($fullpath, ":crlf");
+  # last modification time
   my $mtime   = (stat $fullpath)[9];
 
-  for my $filter (@podfilters) {
-    $filter->($content);
-  }
-
-  my $parser = Pod::POM->new;
-  my $pom    = $parser->parse_text($content) or die $parser->error;
+  # call view to generate HTML
+  my $pom    = $self->extract_POM($fullpath);
   my $view   = $self->mk_view(path            => "script/$path",
                               mtime           => $mtime,
                               syntax_coloring => $coloring_package);
   my $html   = $view->print($pom);
 
+  # return HTML
   return $self->send_html($html, $mtime);
 }
 
@@ -468,16 +464,14 @@ sub find_file {
 
 
 
-sub pod2pom {
-  my ($self, $sourcefile) = @_;
-  my $content = $self->slurp_file($sourcefile, ":crlf");
+sub extract_POM {
+  my ($self, $sourcefile, @more_podfilters) = @_;
 
-  for my $filter (@podfilters) {
-    $filter->($content);
-  }
-
+  my $pod    = $self->slurp_file($sourcefile, ":crlf");
+  $_->($pod) foreach @podfilters, @more_podfilters;
   my $parser = Pod::POM->new;
-  my $pom = $parser->parse_text($content) or die $parser->error;
+  my $pom    = $parser->parse_text($pod) or die $parser->error;
+
   return $pom;
 }
 
@@ -634,10 +628,10 @@ sub htmlize_perldocs {
   my $parser  = Pod::POM->new;
 
   # Pod/perl.pom Synopsis contains a classification of perl*.pod documents
-  my ($perlpod) = $self->find_module("perl")
+  my ($perl_path) = $self->find_module("perl")
     or die "'perl.pod' does not seem to be installed on this system";
-  my $source  = $self->slurp_file($perlpod, ":crlf");
-  my $perlpom = $parser->parse_text($source) or die $parser->error;
+
+  my $perlpom = $self->extract_POM($perl_path);
 
   my $h1 =  (firstval {$_->title eq 'GETTING HELP'} $perlpom->head1)
          || (firstval {$_->title eq 'SYNOPSIS'}     $perlpom->head1);
@@ -995,9 +989,9 @@ sub perlfunc_items {
   my ($self) = @_;
 
   unless (@_perlfunc_items) {
-    my ($funcpod) = $self->find_module("perlfunc")
+    my ($func_path)  = $self->find_module("perlfunc")
       or die "'perlfunc.pod' does not seem to be installed on this system";
-    my $funcpom   = $self->pod2pom($funcpod);
+    my $funcpom       = $self->extract_POM($func_path);
     my ($description) = grep {$_->title eq 'DESCRIPTION'} $funcpom->head1;
     my ($alphalist)
       = grep {$_->title =~ /^Alphabetical Listing/i} $description->head2;
@@ -1038,10 +1032,10 @@ sub perlvar_items {
   unless ($self->{perlvar_items}) {
 
     # get items defining variables
-    my ($varpod) = $self->find_module("perlvar")
+    my ($var_path) = $self->find_module("perlvar")
       or die "'perlvar.pod' does not seem to be installed on this system";
-    my $varpom   = $self->pod2pom($varpod);
-    my @items    = _extract_items($varpom);
+    my $varpom     = $self->extract_POM($var_path);
+    my @items      = _extract_items($varpom);
 
     # group items having common content
     my $tmp = [];
@@ -1092,15 +1086,14 @@ sub perlfaq {
   my $view = $self->mk_view(path => "perlfaq/$faq_entry");
 
  FAQ:
-  for my $num (1..9) {
-    my $faq = "perlfaq$num";
-    my ($faqpod) = $self->find_module($faq)
+  foreach my $faq (map {"perlfaq$_"} 1..9) {
+    my ($faq_path) = $self->find_module($faq)
       or die "'$faq.pod' does not seem to be installed on this system";
-    my $faqpom = $self->pod2pom($faqpod);
+    my $faqpom    = $self->extract_POM($faq_path);
     my @questions = map {grep {$_->title =~ $regex} $_->head2} $faqpom->head1
       or next FAQ;
     my @nodes = map {$view->print($_)} @questions;
-    $answers .= generic_node(label     => "Found in perlfaq$num",
+    $answers .= generic_node(label     => "Found in $faq",
                              label_tag => "h2",
                              content   => join("", @nodes));
     $n_answers += @nodes;
