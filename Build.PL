@@ -23,6 +23,7 @@ my $builder = Module::Build->new(
       'Time::HiRes'          => 0,
       'HTTP::Daemon'         => 0,
       'MIME::Types'          => 0,
+      'Path::Tiny'           => 0,
       'URI'                  => 0,
       'URI::QueryParam'      => 0,
       'Config'               => 0,

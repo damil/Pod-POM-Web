@@ -11,7 +11,7 @@ use Plack::Request;                         # Plack API for an HTTP request
 use Plack::Response;                        # Plack API for an HTTP response
 use Plack::Util;                            # encode_html()
 use Pod::POM 0.25;                          # parsing Pod
-use List::Util      qw/max/;                # maximum
+use List::Util      qw/min max/;            # numeric minimum & maximum
 use List::MoreUtils qw/uniq firstval any/;  # list utilities
 use Module::CoreList;                       # asking if a module belongs to Perl core
 use MIME::Types;                            # translate file extension into MIME type
@@ -23,10 +23,12 @@ use Encode          qw/decode encode_utf8/; # utf8 encoding
 use Encode::Detect;                         # automatic encoding recognition
 use Params::Validate qw/validate_with SCALAR ARRAYREF/; # check validity of parameters
 use CPAN::Common::Index::Mux::Ordered;      # current CPAN version of a module
+use Path::Tiny       qw/path/;
+use Pod::POM::Web::Indexer;
 
 
 # other modules that may be required dynamically :
-# Getopt::Long, PPI::HTML, ActiveState::Scineplex, Pod::POM::Web::Indexer, Plack::Runner
+# Getopt::Long, PPI::HTML, ActiveState::Scineplex, Plack::Runner
 
 
 #----------------------------------------------------------------------
@@ -35,28 +37,33 @@ use CPAN::Common::Index::Mux::Ordered;      # current CPAN version of a module
 
 our $VERSION = '1.24';
 
+# directories for modules -- filter @INC (we don't want '.', nor server_root added by mod_perl)
+my $server_root = eval {Apache2::ServerUtil::server_root()} || "";
+my @default_module_dirs = grep {!/^\./ && $_ ne $server_root} @INC;
+
+# directories for executable perl scripts
+my @default_script_dirs = grep {$_}
+                          @Config{qw/sitescriptexp vendorscriptexp scriptdirexp/};
+
+
+(my $default_index_dir = __FILE__) =~ s[Web\.pm$][Web/index];
+
+
 # parameters for instantiating the module. They could also come from cmd-line options
 my %params_for_new = (
-  page_title  => {type => SCALAR  , optional => 1},
+  page_title  => {type => SCALAR  , default => 'Perl documentation'},
+  module_dirs => {type => ARRAYREF, default => \@default_module_dirs},
+  script_dirs => {type => ARRAYREF, default => \@default_script_dirs},
+  index_dir   => {type => SCALAR  , default => $default_index_dir},
   script_name => {type => SCALAR  , optional => 1},
-  module_dirs => {type => ARRAYREF, optional => 1},
-  script_dirs => {type => ARRAYREF, optional => 1},
  );
 my @params_for_getopt = (
   'page_title|title=s',
   'module_dirs|mdirs=s@{,}',
   'script_dirs|sdirs=s@{,}',
+  'index_dir|idir=s',
 );
 
-
-# directories for modules -- filter @INC (we don't want '.', nor server_root added by mod_perl)
-my $server_root = eval {Apache2::ServerUtil::server_root()} || "";
-our                # because accessed from Pod::POM::Web::Indexer
-  @default_module_dirs = grep {!/^\./ && $_ ne $server_root} @INC;
-
-# directories for executable perl scripts
-my @default_script_dirs = grep {$_}
-                          @Config{qw/sitescriptexp vendorscriptexp scriptdirexp/};
 
 # some subdirs never contain Pod documentation
 my @ignore_toc_dirs = qw/auto unicore/;
@@ -67,9 +74,6 @@ my $coloring_package
   = eval {require PPI::HTML}              ? "PPI"
   : eval {require ActiveState::Scineplex} ? "SCINEPLEX"
   : "";
-
-# full-text indexing (optional)
-my $no_indexer = eval {require Pod::POM::Web::Indexer} ? 0 : $@;
 
 # A sequence of optional filters to apply to the source code before
 # running it through Pod::POM. Source code is passed in $_[0] and
@@ -95,6 +99,8 @@ sub import {
   # export "server" -- for "perl -MPod::POM::Web -e server"
   if ($package eq 'main' and $filename eq '-e') {
     *{'main::server'} = sub { $class->server };
+
+    *{'main::index'} = sub { $class->index(@_) };
   }
 
   # export "app" --- for "plackup -MPod::POM::Web -e app"
@@ -144,6 +150,21 @@ sub handler : method  {
   }
 }
 
+sub index {
+  my ($class, %options) = @_;
+
+  my $self = $class->new();
+  require Pod::POM::Web::Indexer;
+
+  my $session = Pod::POM::Web::Indexer::IndexingSession->new(
+    index_dir   => $self->{index_dir},
+    module_dirs => $self->{module_dirs},
+    %options,
+   );
+
+  $session->start;
+}
+
 
 # constructor
 sub new {
@@ -156,11 +177,6 @@ sub new {
     allow_extra => 0,
    );
 
-  # default values
-  $self->{page_title} ||= 'Perl documentation';
-  push @{$self->{module_dirs}}, @default_module_dirs;
-  push @{$self->{script_dirs}}, @default_script_dirs;
-
   # CPAN index
   my @cpan_indices = (MetaDB       => {});
   if (0 and
@@ -172,6 +188,7 @@ sub new {
   }
   $self->{cpan_index} = CPAN::Common::Index::Mux::Ordered->assemble(@cpan_indices);
 
+
   # create instance
   bless $self, $class;
 }
@@ -181,9 +198,25 @@ sub new {
 # INSTANCE METHODS
 #----------------------------------------------------------------------
 
+
 # simple-minded accessors
 sub module_dirs {@{shift->{module_dirs}}}
 sub script_dirs {@{shift->{script_dirs}}}
+
+
+
+sub indexer {
+  my ($self) = @_;
+
+  # lazy creation at first call
+  $self->{indexer} ||= Pod::POM::Web::Indexer->new(index_dir   => $self->{index_dir},
+                                                   module_dirs => $self->{module_dirs});
+
+  return $self->{indexer};
+}
+
+
+
 
 # request dispatcher (see L<Plack::Component>)
 sub call {
@@ -204,13 +237,14 @@ sub call {
   # dispatch
   $path_info =~ s[^/][] or return $self->index_frameset($req);
   for ($path_info) {
-    /^$/               and return $self->index_frameset($req);
-    /^index$/          and return $self->index_frameset($req);
-    /^toc$/            and return $self->main_toc($req);
-    /^toc\/(.*)$/      and return $self->toc_for($1);   # Ajax calls
-    /^script\/(.*)$/   and return $self->serve_script($1);
-    /^search$/         and return $self->dispatch_search($req);
-    /^source\/(.*)$/   and return $self->serve_source($1, $req);
+    /^$/                      and return $self->index_frameset($req);
+    /^index$/                 and return $self->index_frameset($req);
+    /^toc$/                   and return $self->main_toc($req);
+    /^toc\/(.*)$/             and return $self->toc_for($1);   # Ajax calls
+    /^script\/(.*)$/          and return $self->serve_script($1);
+    /^search$/                and return $self->dispatch_search($req);
+    /^source\/(.*)$/          and return $self->serve_source($1, $req);
+    /^ft_index$/              and return $self->ft_index($req);
 
     # for debugging
     /^_dirs$/          and return $self->send_html(
@@ -225,6 +259,26 @@ sub call {
     return $self->serve_module($path_info);
   }
 }
+
+
+
+sub ft_index {
+  my ($self, $req) = @_;
+
+  my $command = "index";
+  $command .= "(from_scratch=>1)" if $req->param('from_scratch');
+
+  open my $pipe, '-|', qq{perl -Ilib -MPod::POM::Web -e "$command"};
+
+  delete $self->{indexer};
+
+  my $res = Plack::Response->new(200);
+  $res->content_type('text/plain');
+  $res->body($pipe);
+  return $res->finalize;
+}
+
+
 
 
 #----------------------------------------------------------------------
@@ -279,7 +333,7 @@ sub serve_source {
   # build text to display
   my $display_text;
   foreach my $file (@files) {
-    my $text = decode("Detect", $self->slurp_file($file, ":raw"));
+    my $text = decode("Detect", path($file)->slurp_raw);
     $text =~ s/\r\n/\n/g;
 
     my $view = $self->mk_view(
@@ -341,7 +395,7 @@ sub serve_file {
 
   my ($fullpath) = $self->find_file(module_dirs => $path);
   my $mime_type  = MIME::Types->new->mimeTypeOf($extension);
-  my $content    = $self->slurp_file($fullpath, ":raw");
+  my $content    = path($fullpath)->slurp_raw;
   my $mtime      = (stat $fullpath)[9];
   $self->send_content({
     content   => $content,
@@ -467,7 +521,7 @@ sub find_file {
 sub extract_POM {
   my ($self, $sourcefile, @more_podfilters) = @_;
 
-  my $pod    = $self->slurp_file($sourcefile, ":crlf");
+  my $pod    = path($sourcefile)->slurp;
   $_->($pod) foreach @podfilters, @more_podfilters;
   my $parser = Pod::POM->new;
   my $pom    = $parser->parse_text($pod) or die $parser->error;
@@ -688,17 +742,13 @@ sub htmlize_entries {
     }
     if ($entry->{pod}) {
       $args{href}     = $entry->{node};
-      $args{abstract} = $self->get_abstract($entry->{node});
+      $args{module_descr} = $self->indexer->get_module_description($entry->{node})
+        if $self->indexer->has_index;
     }
     $html .= generic_node(%args);
   }
   return $html;
 }
-
-sub get_abstract {
-  # override in indexer
-}
-
 
 
 
@@ -721,7 +771,9 @@ sub main_toc {
   s|"|\\"|g    foreach @vars;
   my $json_vars = "[" . join(",", map {qq{"$_"}} uniq @vars) . "]";
 
-  my $js_no_indexer = $no_indexer ? 'true' : 'false';
+  # TODO
+  # my $js_no_indexer = $no_indexer ? 'true' : 'false';
+  my $js_no_indexer = 'false';
 
   my @perl_sections = map {closed_node(
       label       => ucfirst($_),
@@ -920,7 +972,7 @@ sub main_toc {
 $self->{page_title}
 </div>
 <div style="text-align:right">
-<a href="Pod/POM/Web/Help" class="small_title">Help</a>
+<a href="$self->{script_name}/Pod/POM/Web/Help" class="small_title">Help</a>
 </div>
 
 <form action="search" id="search_form" method="get">
@@ -963,23 +1015,21 @@ sub dispatch_search {
   my ($self, $req) = @_;
 
   my $params = $req->parameters;
-  my $source = $params->{source};
-  my $method = {perlfunc      => 'perlfunc',
-                perlvar       => 'perlvar',
-                perlfaq       => 'perlfaq',
-                modules       => 'serve_module',
-                full_text     => 'full_text',
-                modlist       => 'modlist',
-                }->{$source}  or die "cannot search in '$source'";
 
-  if ($method =~ /full_text|modlist/ and $no_indexer) {
-    die "<p>this method requires <b>Search::Indexer</b></p>"
-      . "<p>please ask your system administrator to install it</p>"
-      . "(<small>error message : $no_indexer</small>)";
+  for ($params->{source}) {
+    /^perlfunc$/  and return $self->search_perlfunc($params->{search});
+    /^perlvar$/   and return $self->search_perlvar($params->{search});
+    /^perlfaq$/   and return $self->search_perlfaq($params->{search});
+    /^modules$/   and return $self->serve_module($params->{search});
+    /^full-text$/ and return $self->search_fulltext($params);
+    /^modlist$/   and return $self->modules_matching_prefix($params->{search});
+
+    # otherwise
+    die "cannot search in '$_'";
   }
-
-  return $self->$method($params->{search});
 }
+
+
 
 
 
@@ -1001,7 +1051,7 @@ sub perlfunc_items {
 }
 
 
-sub perlfunc {
+sub search_perlfunc {
   my ($self, $func) = @_;
   my @items = grep {$_->title =~ /^$func\b/} $self->perlfunc_items
      or return $self->send_html("No documentation found for perl "
@@ -1052,10 +1102,10 @@ sub perlvar_items {
 }
 
 
-sub perlvar {
+sub search_perlvar {
   my ($self, $var) = @_;
 
-  my @items = grep {any {$_->title =~ /^\Q$var\E(\s|$)/} @$_}
+  my @items = grep {any { $_->title =~ /^\Q$var\E(\s|$)/ } @$_}
                    $self->perlvar_items
      or return $self->send_html("No documentation found for perl "
                                ."variable '<tt>$var</tt>'");
@@ -1077,7 +1127,7 @@ __EOHTML__
 
 
 
-sub perlfaq {
+sub search_perlfaq {
   my ($self, $faq_entry) = @_;
   my $regex = qr/\b\Q$faq_entry\E\b/i;
   my $answers   = "";
@@ -1124,6 +1174,142 @@ $answers
 __EOHTML__
 
 }
+
+
+sub search_fulltext {
+  my ($self, $params) = @_;
+
+  my $html = <<__EOHTML__;
+<html>
+<head>
+  <link href="$self->{script_name}/Alien/GvaScript/lib/GvaScript.css" rel="stylesheet" type="text/css">
+  <link href="$self->{script_name}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+  <style>
+    .src {font-size:70%; float: right}
+    .sep {font-size:110%; font-weight: bolder; color: magenta;
+          padding-left: 8px; padding-right: 8px}
+    .hl  {background-color: lightpink}
+  </style>
+  <script>
+    function confirm_reindex() {
+       var want_reindex = confirm("This action may take a few minutes. The index will use " +
+                                  "about 20MB on your hard disk. Proceed ?");
+       if (want_reindex) 
+         document.getElementById('ft_results').innerHTML 
+             = "Reindex in progress, please wait...";
+
+       return want_reindex;
+    }
+  </script>
+</head>
+<body>
+
+<form style="float:right" action="$self->{script_name}/ft_index"
+  onsubmit="return confirm_reindex()">
+(Re)generate index
+<label><input type=radio name=from_scratch value=0 checked>incrementally</label>
+<label><input type=radio name=from_scratch value=1>from scratch</label>
+<input type=submit value=Go>
+</form>
+
+<div id="ft_results">
+__EOHTML__
+
+  if (!$self->indexer->has_index) {
+    $html .= "No full-text index found in $self->{index_dir}."
+          .  "Please use the form above to generate the index";
+  }
+  else {
+    my $search_string = $params->{search};
+    my $result = $self->indexer->search($search_string);
+
+    my $killedWords = join ", ", @{$result->{killedWords}};
+    $killedWords &&= " (ignoring words : $killedWords)";
+    my $regex = $result->{regex};
+
+    my $scores = $result->{scores};
+    my @doc_ids = sort {$scores->{$b} <=> $scores->{$a}} keys %$scores;
+
+    my $nav_links = $self->paginate_results(\@doc_ids, $params);
+
+    $html .= "<b>Full-text search</b> for '$search_string'$killedWords<br>"
+           . "$nav_links<hr>\n";
+
+    foreach my $id (@doc_ids) {
+      my ($mtime, $path, $description) = split "\t", $self->indexer->{docs}{$id};
+      my $score     = $scores->{$id};
+      my @filenames = $self->find_module($path);
+      my $buf = join "\n", map {path($_)->slurp} @filenames;
+
+      my $excerpts = $self->indexer->excerpts($buf, $regex);
+      foreach (@$excerpts) {
+        s/&/&amp;/g,  s/</&lt;/g, s/>/&gt;/g; # replace entities
+        s/\[\[/<span class='hl'>/g, s/\]\]/<\/span>/g; # highlight
+      }
+      $excerpts = join "<span class='sep'>/</span>", @$excerpts;
+      $html .= "<p>"
+             . "<a href='$self->{script_name}/source/$path' class='src'>source</a>"
+             . "<a href='$self->{script_name}/$path'>$path</a>"
+             . "<em>$description</em>"
+             . "<br>"
+             . "<small>$excerpts</small>"
+             . "</p>";
+
+    }
+    $html .= "<hr>$nav_links\n";
+  }
+
+  $html .= "</div></body></html>";
+
+  return $self->send_html($html);
+}
+
+
+
+sub paginate_results {
+  my ($self, $doc_ids_ref, $params) = @_;
+
+  my $n_docs       = @$doc_ids_ref;
+  my $count        = $params->{count} || 50;
+  my $start_record = $params->{start} || 0;
+  my $end_record   = min($start_record + $count - 1, $n_docs - 1);
+  @$doc_ids_ref    = @$doc_ids_ref[$start_record ... $end_record];
+  my $prev_idx     = max($start_record - $count, 0);
+  my $next_idx     = $start_record + $count;
+  my $base_url     = "?source=full-text&search=$params->{search}";
+  my $prev_link    = $start_record > 0   ? "$base_url&start=$prev_idx" : "";
+  my $next_link    = $next_idx < $n_docs ? "$base_url&start=$next_idx" : "";
+
+  # URI escape
+  s{([^;\/?:@&=\$,A-Za-z0-9\-_.!~*'()])}
+   {sprintf("%%%02X", ord($1))         }ge for $prev_link, $next_link;
+
+  $_ += 1 for $start_record, $end_record;
+  my $nav_links = "";
+  $nav_links .= "<a href='$prev_link'>[Previous &lt;&lt;]</a> " if $prev_link;
+  $nav_links .= "Results <b>$start_record</b> to <b>$end_record</b> "
+              . "from <b>$n_docs</b>";
+  $nav_links .= " <a href='$next_link'>[&gt;&gt; Next]</a> " if $next_link;
+  return $nav_links;
+}
+
+
+sub modules_matching_prefix { # called by Ajax
+  my ($self, $search_string) = @_;
+
+
+  $self->indexer->has_index
+    or die "module list : no index";
+
+
+  my @matching_modules = $self->indexer->modules_matching_prefix($search_string);
+  my $json    = "[" . join(",", map {qq{"$_"}} sort @matching_modules) . "]";
+
+  return $self->send_content({content   => $json,
+                              mime_type => 'application/x-json'});
+
+}
+
 
 
 #----------------------------------------------------------------------
@@ -1195,9 +1381,9 @@ sub generic_node {
                   : ("span", ""                     );
   $args{label_tag}   ||= $default_label_tag;
   $args{label_class} ||= "TN_label";
-  if ($args{abstract}) {
-    my $abstract = Plack::Util::encode_html($args{abstract});
-    $label_attrs .= qq{ title="$abstract"};
+  if ($args{module_descr}) {
+    my $module_descr = Plack::Util::encode_html($args{module_descr});
+    $label_attrs .= qq{ title="$module_descr"};
   }
   return qq{<div class="$args{class}"$args{attrs}>}
        .    qq{<$args{label_tag} class="$args{label_class}"$label_attrs>}
@@ -1221,14 +1407,6 @@ sub leaf {
 # utilities
 #----------------------------------------------------------------------
 
-
-sub slurp_file {
-  my ($self, $file, $io_layer) = @_;
-  open my $fh, "<", $file or die "open $file: $!";
-  binmode($fh, $io_layer) if $io_layer;
-  local $/ = undef;
-  return <$fh>;
-}
 
 
 sub parse_version {
