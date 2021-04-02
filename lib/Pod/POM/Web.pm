@@ -3,7 +3,7 @@ package Pod::POM::Web; # see doc at end of file
 #======================================================================
 use strict;
 use warnings;
-use 5.008;
+use 5.010;
 no warnings 'uninitialized';
 
 use parent 'Plack::Component';              # web app based on Plack architecture
@@ -24,7 +24,6 @@ use Encode::Detect;                         # automatic encoding recognition
 use Params::Validate qw/validate_with SCALAR ARRAYREF/; # check validity of parameters
 use CPAN::Common::Index::Mux::Ordered;      # current CPAN version of a module
 use Path::Tiny       qw/path/;
-use Pod::POM::Web::Indexer;
 
 
 # other modules that may be required dynamically :
@@ -55,7 +54,7 @@ my %params_for_new = (
   module_dirs => {type => ARRAYREF, default => \@default_module_dirs},
   script_dirs => {type => ARRAYREF, default => \@default_script_dirs},
   index_dir   => {type => SCALAR  , default => $default_index_dir},
-  script_name => {type => SCALAR  , optional => 1},
+  script_name => {type => SCALAR  , optional => 1}, # will be filled at first web request
  );
 my @params_for_getopt = (
   'page_title|title=s',
@@ -90,17 +89,16 @@ my @podfilters = (
 # CLASS METHODS
 #----------------------------------------------------------------------
 
-# export functions to be called from command-line option -e
+# functions exported so that they can be called from command-line
 sub import {
   my $class = shift;
   my ($package, $filename) = caller;
   no strict 'refs';
 
-  # export "server" -- for "perl -MPod::POM::Web -e server"
+  # export "server" and "index" -- for "perl -MPod::POM::Web -e ..."
   if ($package eq 'main' and $filename eq '-e') {
     *{'main::server'} = sub { $class->server };
-
-    *{'main::index'} = sub { $class->index(@_) };
+    *{'main::index'}  = sub { $class->index(@_) };
   }
 
   # export "app" --- for "plackup -MPod::POM::Web -e app"
@@ -140,7 +138,7 @@ sub app {
 sub handler : method  {
   my ($class, $r) = @_;
 
-  if (ref $r =~ /^Apache/) {
+  if ($r && ref $r =~ /^Apache/) {
     require Plack::Handler::Apache2;
     Plack::Handler::Apache2->call_app($r, $class->app);
   }
@@ -150,19 +148,12 @@ sub handler : method  {
   }
 }
 
+# façade to the Indexer class -- for facilitating command-line invocation
 sub index {
   my ($class, %options) = @_;
 
   my $self = $class->new();
-  require Pod::POM::Web::Indexer;
-
-  my $session = Pod::POM::Web::Indexer::IndexingSession->new(
-    index_dir   => $self->{index_dir},
-    module_dirs => $self->{module_dirs},
-    %options,
-   );
-
-  $session->start;
+  $self->indexer->start_indexing_session;
 }
 
 
@@ -177,17 +168,16 @@ sub new {
     allow_extra => 0,
    );
 
-  # CPAN index
-  my @cpan_indices = (MetaDB       => {});
-  if (0 and
-        my $local_minicpan = eval {require CPAN::Mini;
-                                   my %conf = CPAN::Mini->read_config;
-                                   $conf{local}}) {
+  # sources for CPAN index. The default requires an internet connexion. If there is a
+  # local MiniCPAN mirror, it will be detected and used as an alternate source.
+  my @cpan_indices = (MetaDB => {}); 
+  if (my $local_minicpan = eval {require CPAN::Mini;
+                                 my %conf = CPAN::Mini->read_config;
+                                 $conf{local}}) {
     unshift @cpan_indices,
       LocalPackage => { source => "$local_minicpan/modules/02packages.details.txt.gz" };
   }
   $self->{cpan_index} = CPAN::Common::Index::Mux::Ordered->assemble(@cpan_indices);
-
 
   # create instance
   bless $self, $class;
@@ -203,22 +193,22 @@ sub new {
 sub module_dirs {@{shift->{module_dirs}}}
 sub script_dirs {@{shift->{script_dirs}}}
 
-
-
+# lazy instantiation of the indexer class, at first call or if there are specific options
 sub indexer {
-  my ($self) = @_;
+  my ($self, %options) = @_;
 
-  # lazy creation at first call
-  $self->{indexer} ||= Pod::POM::Web::Indexer->new(index_dir   => $self->{index_dir},
-                                                   module_dirs => $self->{module_dirs});
-
+  delete $self->{indexer} if keys %options;
+  require Pod::POM::Web::Indexer;
+  $self->{indexer} //= Pod::POM::Web::Indexer->new(index_dir   => $self->{index_dir},
+                                                   module_dirs => $self->{module_dirs},
+                                                   %options);
   return $self->{indexer};
 }
 
 
 
 
-# request dispatcher (see L<Plack::Component>)
+# main request dispatcher (see L<Plack::Component>)
 sub call {
   my ($self, $env) = @_;
 
@@ -237,47 +227,22 @@ sub call {
   # dispatch
   $path_info =~ s[^/][] or return $self->index_frameset($req);
   for ($path_info) {
-    /^$/                      and return $self->index_frameset($req);
-    /^index$/                 and return $self->index_frameset($req);
-    /^toc$/                   and return $self->main_toc($req);
-    /^toc\/(.*)$/             and return $self->toc_for($1);   # Ajax calls
-    /^script\/(.*)$/          and return $self->serve_script($1);
-    /^search$/                and return $self->dispatch_search($req);
-    /^source\/(.*)$/          and return $self->serve_source($1, $req);
-    /^ft_index$/              and return $self->ft_index($req);
+    /^$/               and return $self->index_frameset($req);
+    /^index$/          and return $self->index_frameset($req);
+    /^toc$/            and return $self->main_toc($req);
+    /^toc\/(.*)$/      and return $self->toc_for($1);   # Ajax calls
+    /^script\/(.*)$/   and return $self->serve_script($1);
+    /^search$/         and return $self->dispatch_search($req);
+    /^source\/(.*)$/   and return $self->serve_source($1, $req);
+    /^ft_index$/       and return $self->ft_index($req);
 
-    # for debugging
-    /^_dirs$/          and return $self->send_html(
-      join "<br>", "<b>Modules</b>" => $self->module_dirs,
-                   "<b>Scripts</b>" => $self->script_dirs,
-      );
-
-    # file extension : passthrough
+    # files with extensions (.css, .js, images)
     /\.(\w+)$/         and return $self->serve_file($path_info, $1);
 
-    #otherwise
+    # otherwise, it must be a module
     return $self->serve_module($path_info);
   }
 }
-
-
-
-sub ft_index {
-  my ($self, $req) = @_;
-
-  my $command = "index";
-  $command .= "(from_scratch=>1)" if $req->param('from_scratch');
-
-  open my $pipe, '-|', qq{perl -Ilib -MPod::POM::Web -e "$command"};
-
-  delete $self->{indexer};
-
-  my $res = Plack::Response->new(200);
-  $res->content_type('text/plain');
-  $res->body($pipe);
-  return $res->finalize;
-}
-
 
 
 
@@ -320,7 +285,7 @@ sub serve_source {
   my $params = $req->parameters;
 
   # default (if not printing): line numbers and syntax coloring are on
-  $params->{print} or  $params->{lines} = $params->{coloring} = 1;
+  $params->{lines} = $params->{coloring} = 1 unless $params->{print};
 
   # find the source file(s)
   my @files = $path =~ s[^script/][] ? $self->find_script($path)
@@ -330,18 +295,17 @@ sub serve_source {
   # last modification
   my $mtime = max map{(stat $_)[9]} @files;
 
-  # build text to display
-  my $display_text;
+  # build formatted source
+  my $view = $self->mk_view(
+    line_numbering  => $params->{lines},
+    syntax_coloring => ($params->{coloring} ? $coloring_package : "")
+   );
+  my $formatted_sources = "";
   foreach my $file (@files) {
-    my $text = decode("Detect", path($file)->slurp_raw);
-    $text =~ s/\r\n/\n/g;
-
-    my $view = $self->mk_view(
-      line_numbering  => $params->{lines},
-      syntax_coloring => ($params->{coloring} ? $coloring_package : "")
-     );
-    $text    = $view->view_verbatim($text);
-    $display_text .= "<p/><h2>$file</h2><p/><pre>$text</pre>";
+    my $source = decode("Detect", path($file)->slurp_raw);
+    $source =~ s/\r\n/\n/g;
+    my $formatted_source = $view->view_verbatim($source);
+    $formatted_sources .= "<p/><h2>$file</h2><p/><pre>$formatted_source</pre>";
   }
 
 
@@ -363,12 +327,13 @@ __EOHTML__
 <a href="$self->{script_name}/$path" style="float:right">Doc</a>
 __EOHTML__
 
+  my $css_links = $self->css_links;
+
   my $html = <<__EOHTML__;
 <html>
 <head>
   <title>Source of $path</title>
-  <link href="$self->{script_name}/Alien/GvaScript/lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="$self->{script_name}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+  $css_links
   <style>
     PRE {border: none; background: none}
     FORM {float: right; font-size: 70%; border: 1px solid}
@@ -377,10 +342,8 @@ __EOHTML__
 <body>
 $doc_link
 <h1>Source of $path</h1>
-
 $offer_print
-
-$display_text
+$formatted_sources
 </body>
 </html>
 __EOHTML__
@@ -390,10 +353,14 @@ __EOHTML__
 }
 
 
+
 sub serve_file {
   my ($self, $path, $extension) = @_;
 
-  my ($fullpath) = $self->find_file(module_dirs => $path);
+  my ($fullpath) = $self->find_file(module_dirs => $path)
+    or return $self->send_content({code => 404,
+                                   content   => "$path: no such file"});
+
   my $mime_type  = MIME::Types->new->mimeTypeOf($extension);
   my $content    = path($fullpath)->slurp_raw;
   my $mtime      = (stat $fullpath)[9];
@@ -416,41 +383,38 @@ sub serve_module {
   my $mtime   = max map {(stat $_)[9]} @sources;
 
   # module version
-  my $version = firstval {$_} map {$self->parse_version($_)} grep {/\.pm$/} @sources;
+  my $version = firstval {$_} map {parse_version($_)} grep {/\.pm$/} @sources;
 
   # latest CPAN version
   (my $mod_name = $path) =~ s[/][::]g;
   my $cpan_package = $self->{cpan_index}->search_packages( { package => $mod_name } );
   my $cpan_version = $cpan_package ? $cpan_package->{version} : undef;
 
-
+  # special handling for perlfunc: remove args in links to function names
+  # (for ex. L<C<open>|/open FILEHANDLE,MODE,EXPR> becomes L<C<open>|/open>
+  #
   my @special_podfilters;
-  # special handling for perlfunc: 
-  if ($path =~ /\bperlfunc$/) {
-    push @special_podfilters, sub {
-      $_[0] =~ s[(L<.*?\|/\w+)\s.*?>][$1>]g;
-    };
-  }
+  push @special_podfilters, sub {$_[0] =~ s[(L<.*?\|/\w+)\s.*?>][$1>]g}
+    if $path eq 'perlfunc';
 
-  # POD content from the first file in list
-  my $pom = $self->extract_POM($sources[0], @special_podfilters);
+  # POD content, preferably from the 1st file in list, otherwise from the 2nd
+  my $pom     = $self->extract_POM($sources[0], @special_podfilters);
+  my @content = $pom->content;
+  $pom = $self->extract_POM($sources[1], @special_podfilters)
+    if @sources > 1 and !@content;
 
-
-  # assemble information to be passed to the view
+  # generate HTML through the view class
   my $view = $self->mk_view(version         => $version,
                             mtime           => $mtime,
                             path            => $path,
                             mod_name        => $mod_name,
                             cpan_version    => $cpan_version,
                             syntax_coloring => $coloring_package);
-
-  # generate HTML
   my $html = $view->print($pom);
 
-  # again special handling for perlfunc : ids should be just function names
-  if ($path =~ /\bperlfunc$/) {
-    $html =~ s/li id="(.*?)_.*?"/li id="$1"/g;
-  }
+  # again, special handling for perlfunc : ids should be just function names
+  $html =~ s/li id="(.*?)_.*?"/li id="$1"/g
+    if $path eq 'perlfunc';
 
   # special handling for 'perl' : hyperlinks to man pages
   if ($path =~ /\bperl$/) {
@@ -552,6 +516,7 @@ __EOHTML__
 
   $self->send_html($html);
 }
+
 
 
 #----------------------------------------------------------------------
@@ -794,16 +759,14 @@ sub main_toc {
                               content     => $alpha_list);
 
 
+  my $css_links = $self->css_links;
+  my $js_scripts = $self->js_scripts;
   return $self->send_html(<<__EOHTML__);
 <html>
 <head>
   <base target="contentFrame">
-  <link href="$self->{script_name}/Alien/GvaScript/lib/GvaScript.css"
-        rel="stylesheet" type="text/css">
-  <link href="$self->{script_name}/Pod/POM/Web/lib/PodPomWeb.css"
-        rel="stylesheet" type="text/css">
-  <script src="$self->{script_name}/Alien/GvaScript/lib/prototype.js"></script>
-  <script src="$self->{script_name}/Alien/GvaScript/lib/GvaScript.js"></script>
+  $css_links
+  $js_scripts
   <script>
     var treeNavigator;
     var perlfuncs = $json_funcs;
@@ -1060,10 +1023,12 @@ sub search_perlfunc {
   my $view    = $self->mk_view(path => "perlfunc/$func");
 
   my @li_items = map {$_->present($view)} @items;
+  my $css_links = $self->css_links;
+
   return $self->send_html(<<__EOHTML__);
 <html>
 <head>
-  <link href="$self->{script_name}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+  $css_links
 </head>
 <body>
 <h2>Extract from <a href="$self->{script_name}/perlfunc">perlfunc</a></h2>
@@ -1109,13 +1074,13 @@ sub search_perlvar {
                    $self->perlvar_items
      or return $self->send_html("No documentation found for perl "
                                ."variable '<tt>$var</tt>'");
-  my $view    = $self->mk_view(path => "perlvar/$var");
-
-  my @li_items = map {$_->present($view)} map {@$_} @items;
+  my $view      = $self->mk_view(path => "perlvar/$var");
+  my $css_links = $self->css_links;
+  my @li_items  = map {$_->present($view)} map {@$_} @items;
   return $self->send_html(<<__EOHTML__);
 <html>
 <head>
-  <link href="$self->{script_name}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+  $css_links
 </head>
 <body>
 <h2>Extract from <a href="$self->{script_name}/perlvar">perlvar</a></h2>
@@ -1149,13 +1114,13 @@ sub search_perlfaq {
     $n_answers += @nodes;
   }
 
+  my $css_links  = $self->css_links;
+  my $js_scripts = $self->js_scripts;
   return $self->send_html(<<__EOHTML__);
 <html>
 <head>
-  <link href="$self->{script_name}/Alien/GvaScript/lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="$self->{script_name}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
-  <script src="$self->{script_name}/Alien/GvaScript/lib/prototype.js"></script>
-  <script src="$self->{script_name}/Alien/GvaScript/lib/GvaScript.js"></script>
+  $css_links
+  $js_scripts
   <script>
     var treeNavigator;
     function setup() {
@@ -1179,11 +1144,11 @@ __EOHTML__
 sub search_fulltext {
   my ($self, $params) = @_;
 
+  my $css_links = $self->css_links;
   my $html = <<__EOHTML__;
 <html>
 <head>
-  <link href="$self->{script_name}/Alien/GvaScript/lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="$self->{script_name}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
+  $css_links
   <style>
     .src {font-size:70%; float: right}
     .sep {font-size:110%; font-weight: bolder; color: magenta;
@@ -1221,38 +1186,48 @@ __EOHTML__
   }
   else {
     my $search_string = $params->{search};
-    my $result = $self->indexer->search($search_string);
 
-    my $killedWords = join ", ", @{$result->{killedWords}};
+    my $count        = $params->{count} || 50;
+    my $start_record = $params->{start} || 0;
+    my $end_record   = $start_record + $count - 1;
+
+    my $get_doc_content = sub {
+      my $path = shift;
+      my @filenames = $self->find_module($path);
+      return join "\n", map {decode("Detect", path($_)->slurp_raw)} @filenames;
+    };
+
+    my $results = $self->indexer->search($search_string, $start_record, $end_record,
+                                         $get_doc_content);
+
+    my $killedWords = join ", ", @{$results->{killedWords}};
     $killedWords &&= " (ignoring words : $killedWords)";
-    my $regex = $result->{regex};
 
-    my $scores = $result->{scores};
-    my @doc_ids = sort {$scores->{$b} <=> $scores->{$a}} keys %$scores;
+    my $n_in_slice = @{$results->{modules}};
+    $end_record = $start_record + $n_in_slice -1;
 
-    my $nav_links = $self->paginate_results(\@doc_ids, $params);
+    my $n_total = $results->{n_total};
+
+
+    my $base_url  = "?source=full-text&search=$params->{search}";
+    my $nav_links = $self->nav_links($base_url, $start_record, $end_record, $count, $n_total);
 
     $html .= "<b>Full-text search</b> for '$search_string'$killedWords<br>"
            . "$nav_links<hr>\n";
 
-    foreach my $id (@doc_ids) {
-      my ($mtime, $path, $description) = split "\t", $self->indexer->{docs}{$id};
-      my $score     = $scores->{$id};
-      my @filenames = $self->find_module($path);
-      my $buf = join "\n", map {path($_)->slurp} @filenames;
-
-      my $excerpts = $self->indexer->excerpts($buf, $regex);
+    foreach my $module (@{$results->{modules}}) {
+      my ($path, $description, $excerpts) = @$module;
       foreach (@$excerpts) {
         s/&/&amp;/g,  s/</&lt;/g, s/>/&gt;/g; # replace entities
         s/\[\[/<span class='hl'>/g, s/\]\]/<\/span>/g; # highlight
       }
-      $excerpts = join "<span class='sep'>/</span>", @$excerpts;
+      my $lst_excerpts = join "<span class='sep'>/</span>", @$excerpts;
       $html .= "<p>"
              . "<a href='$self->{script_name}/source/$path' class='src'>source</a>"
              . "<a href='$self->{script_name}/$path'>$path</a>"
-             . "<em>$description</em>"
+             . " <em>$description</em>"
              . "<br>"
-             . "<small>$excerpts</small>"
+             . "<small>$lst_excerpts</small>"
              . "</p>";
 
     }
@@ -1266,19 +1241,13 @@ __EOHTML__
 
 
 
-sub paginate_results {
-  my ($self, $doc_ids_ref, $params) = @_;
+sub nav_links {
+  my ($self, $base_url, $start_record, $end_record, $n_slice, $n_total) = @_;
 
-  my $n_docs       = @$doc_ids_ref;
-  my $count        = $params->{count} || 50;
-  my $start_record = $params->{start} || 0;
-  my $end_record   = min($start_record + $count - 1, $n_docs - 1);
-  @$doc_ids_ref    = @$doc_ids_ref[$start_record ... $end_record];
-  my $prev_idx     = max($start_record - $count, 0);
-  my $next_idx     = $start_record + $count;
-  my $base_url     = "?source=full-text&search=$params->{search}";
-  my $prev_link    = $start_record > 0   ? "$base_url&start=$prev_idx" : "";
-  my $next_link    = $next_idx < $n_docs ? "$base_url&start=$next_idx" : "";
+  my $prev_idx  = max($start_record - $n_slice, 0);
+  my $next_idx  = $start_record + $n_slice;
+  my $prev_link = $start_record > 0    ? "$base_url&start=$prev_idx" : "";
+  my $next_link = $next_idx < $n_total ? "$base_url&start=$next_idx" : "";
 
   # URI escape
   s{([^;\/?:@&=\$,A-Za-z0-9\-_.!~*'()])}
@@ -1288,7 +1257,7 @@ sub paginate_results {
   my $nav_links = "";
   $nav_links .= "<a href='$prev_link'>[Previous &lt;&lt;]</a> " if $prev_link;
   $nav_links .= "Results <b>$start_record</b> to <b>$end_record</b> "
-              . "from <b>$n_docs</b>";
+              . "from <b>$n_total</b>";
   $nav_links .= " <a href='$next_link'>[&gt;&gt; Next]</a> " if $next_link;
   return $nav_links;
 }
@@ -1313,6 +1282,29 @@ sub modules_matching_prefix { # called by Ajax
 
 
 #----------------------------------------------------------------------
+# updating the fulltext index
+#----------------------------------------------------------------------
+
+
+sub ft_index {
+  my ($self, $req) = @_;
+
+  my $command = "index";
+  $command .= "(from_scratch=>1)" if $req->param('from_scratch');
+
+  open my $pipe, '-|', qq{perl -Ilib -MPod::POM::Web -e "$command"};
+
+  delete $self->{indexer};
+
+  my $res = Plack::Response->new(200);
+  $res->content_type('text/plain');
+  $res->body($pipe);
+  return $res->finalize;
+}
+
+
+
+#----------------------------------------------------------------------
 # miscellaneous
 #----------------------------------------------------------------------
 
@@ -1322,6 +1314,8 @@ sub mk_view {
 
   my $view = Pod::POM::View::HTML::_PerlDoc->new(
     script_name => $self->{script_name},
+    css_links   => $self->css_links,
+    js_scripts  => $self->js_scripts,
     %args
    );
 
@@ -1361,6 +1355,27 @@ sub send_content {
   $headers->{Last_modified} = $modified if $args->{mtime};
   my $r = Plack::Response->new($code, $headers, $args->{content});
   $r->finalize;
+}
+
+
+sub css_links {
+  my ($self) = @_;
+
+  my @css   = qw(Alien/GvaScript/lib/GvaScript.css Pod/POM/Web/lib/PodPomWeb.css);
+  my @links = map {"<link href='$self->{script_name}/$_' rel='stylesheet' type='text/css'>\n"}
+                  @css;
+
+  return join "", @links;
+}
+
+
+sub js_scripts {
+  my ($self) = @_;
+
+  my @src     = qw(Alien/GvaScript/lib/prototype.js Alien/GvaScript/lib/GvaScript.js);
+  my @scripts = map {"<script src='$self->{script_name}/$_'></script>\n"} @src;
+
+  return join "", @scripts;
 }
 
 
@@ -1404,13 +1419,13 @@ sub leaf {
 
 
 #----------------------------------------------------------------------
-# utilities
+# utility functions (not methods)
 #----------------------------------------------------------------------
 
 
 
 sub parse_version {
-  my ($self, $file_name) = @_;
+  my ($file_name) = @_;
 
   my $mm = Module::Metadata->new_from_file($file_name)
     or die "couldn't create Module::Metadata";
@@ -1539,6 +1554,8 @@ sub _title_to_id {
 sub view_pod {
   my ($self, $pom) = @_;
 
+  $DB::single = 1; 
+
   # compute view
   my $content = $pom->content->present($self)
     or return "no documentation found in <tt>$self->{path}</tt><br>\n"
@@ -1581,16 +1598,15 @@ sub view_pod {
     };
   }
 
-  my $toc = $self->make_toc($pom, 0);
-
+  my $toc        = $self->make_toc($pom, 0);
+  my $css_links  = $self->{css_links};
+  my $js_scripts = $self->{js_scripts};
   return <<__EOHTML__
 <html>
 <head>
   <title>$name</title>
-  <link href="$self->{script_name}/Alien/GvaScript/lib/GvaScript.css" rel="stylesheet" type="text/css">
-  <link href="$self->{script_name}/Pod/POM/Web/lib/PodPomWeb.css" rel="stylesheet" type="text/css">
-  <script src="$self->{script_name}/Alien/GvaScript/lib/prototype.js"></script>
-  <script src="$self->{script_name}/Alien/GvaScript/lib/GvaScript.js"></script>
+  $css_links
+  $js_scripts
   <script>
     var treeNavigator;
     function setup() {
@@ -1642,10 +1658,7 @@ sub view_pod {
   <div class="TN_node">
    <h1 class="TN_label">$name</h1>
    <small>(${version}installed $installed$core_release$cpan_info)</small>
-
-
    <span id="title_descr">$description</span>
-
    <span id="ref_box">
    <a href="$self->{script_name}/source/$self->{path}">Source</a>
    $module_refs

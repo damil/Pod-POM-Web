@@ -2,34 +2,24 @@
 package Pod::POM::Web::Indexer;
 #======================================================================
 
-=begin TODO
-
-  - use Getopt::Long -- @ARGV
-  - 
-
-=end TODO
-
-=cut
-
-
 use strict;
 use warnings;
-use 5.008;
 
 use Pod::POM;
 use List::Util       qw/min max/;
+use List::MoreUtils  qw/part/;
 use Search::Indexer 0.75;
-use BerkeleyDB;
 use Path::Tiny       qw/path/;
-use Params::Validate qw/validate_with SCALAR ARRAYREF/;
+use Params::Validate qw/validate_with SCALAR BOOLEAN ARRAYREF/;
+use Time::HiRes      qw/time/;
+use BerkeleyDB;
 
 
 our $VERSION = 1.23;
 
 #----------------------------------------------------------------------
-# Initializations
+# GLOBAL VARIABLES
 #----------------------------------------------------------------------
-
 
 
 my $id_regex = qr/(?![0-9])       # don't start with a digit
@@ -52,148 +42,6 @@ my $wregex   = qr/(?:                  # either a Perl variable:
                      $id_regex         # a plain word or module name
                  )/x;
 
-
-
-#----------------------------------------------------------------------
-# CONSTRUCTOR
-#----------------------------------------------------------------------
-
-sub new {
-  my $class = shift;
-
-  # attributes received from the client
-  my $self = validate_with(
-    params      => \@_,
-    spec        => {index_dir    => {type => SCALAR},
-                    module_dirs  => {type => ARRAYREF},
-                  },
-    allow_extra => 0,
-   );
-
-  # attempt to tie to the docs database
-  my $bdb_file = "$self->{index_dir}/docs.bdb";
-  tie %{$self->{docs}}, 'BerkeleyDB::Hash', -Filename => $bdb_file, -Flags => DB_RDONLY;
-
-  return bless $self, $class;
-}
-
-
-
-
-
-#----------------------------------------------------------------------
-# RETRIEVING
-#----------------------------------------------------------------------
-
-sub has_index {
-  my ($self) = @_;
-  return scalar keys %{$self->{docs}};
-}
-
-
-
-sub search {
-  my ($self, $search_string) = @_;
-
-  # force Some::Module::Name into "Some::Module::Name" to prevent
-  # interpretation of ':' as a field name by Query::Parser
-  $search_string =~ s/(^|\s)([\w]+(?:::\w+)+)(\s|$)/$1"$2"$3/g;
-
-  my $indexer = Search::Indexer->new(dir       => $self->{index_dir},
-                                     wregex    => $wregex,
-                                     preMatch  => '[[',
-                                     postMatch => ']]');
-  my $result  = $indexer->search($search_string, 'implicit_plus');
-
-  return $result;
-}
-
-
-sub excerpts {
-  my ($self, $buf, $regex) = @_;
-
-  my $indexer = Search::Indexer->new(dir       => $self->{index_dir},
-                                     wregex    => $wregex,
-                                     preMatch  => '[[',
-                                     postMatch => ']]');
-
-  return $indexer->excerpts($buf, $regex);
-}
-
-
-
-sub modules_matching_prefix {
-  my ($self, $search_string) = @_;
-
-  length($search_string) >= 2 or die "module_list: arg too short";
-  $search_string =~ s[::][/]g;
-  my $regex = qr/^\d+\t(\Q$search_string\E[^\t]*)/i;
-
-  my @modules;
-  foreach my $val (values %{$self->{docs}}) {
-    if ($val =~ $regex) {
-      (my $module = $1) =~ s[/][::]g;
-      push @modules, $module;
-    }
-  }
-
-  return @modules;
-}
-
-
-
-
-
-sub get_module_description {
-  my ($self, $path) = @_;
-  if (!$self->{_path_to_descr}) {
-    $self->{_path_to_descr} = {
-      map {(split /\t/, $_)[1,2]} values %{$self->{docs}}
-     };
-  }
-  my $description = $self->{_path_to_descr}->{$path} or return;
-  $description =~ s/^.*?-\s*//;
-  return $description;
-}
-
-
-#----------------------------------------------------------------------
-# INDEXING
-#----------------------------------------------------------------------
-
-
-
-
-
-sub import { # export the "index" function if called from command-line
-  my $class = shift;
-  my ($package, $filename) = caller;
-
-  no strict 'refs';
-  *{'main::index'} = sub {$class->index(@_)}
-    if $package eq 'main' and $filename eq '-e';
-}
-
-sub index {
-  my ($self, %options) = @_;
-
-
-  my $session = Pod::POM::Web::Indexer::IndexingSession->new(%options);
-  $session->start;
-}
-
-#======================================================================
-package # hide from PAUSE
-  Pod::POM::Web::Indexer::IndexingSession;
-#======================================================================
-use strict;
-use warnings;
-use Params::Validate qw/validate_with SCALAR BOOLEAN ARRAYREF/;
-use Time::HiRes      qw/time/;
-use Path::Tiny       qw/path/;
-use List::Util       qw/max/;
-use BerkeleyDB       qw/DB_CREATE/;
-use List::MoreUtils  qw/part/;
 
 my @stopwords = (
   'a' .. 'z', '_', '0' .. '9',
@@ -232,6 +80,13 @@ my $ignore_headings = qr[
       SYNOPSIS | DESCRIPTION | METHODS   | FUNCTIONS |
       BUGS     | AUTHOR      | SEE\ ALSO | COPYRIGHT | LICENSE ]x;
 
+
+#----------------------------------------------------------------------
+# CONSTRUCTOR
+#----------------------------------------------------------------------
+
+
+
 sub new {
   my $class = shift;
 
@@ -247,9 +102,120 @@ sub new {
     allow_extra => 0,
    );
 
-  # with option -from_scratch, throw away old index
+  bless $self, $class;
+}
+
+
+sub docs_db {
+  my ($self) = @_;
+
+  my $docs_file  = "$self->{index_dir}/docs.txt";
+  my $mtime      = (stat $docs_file)[9]
+    or return; # there is no index
+  my $last_mtime = $self->{docs_db}{mtime} // 0;
+
+  if ($mtime > $last_mtime) {
+    # read the file and cache the results
+    my %docs_db = (mtime => $mtime);
+    open my $docs_fh, "<", $docs_file or die "open $docs_file: $!";
+    while (<$docs_fh>) {
+      chomp;
+      my ($id, $path, $module_mtime, $descr) = split /\t/;
+      $docs_db{path}   {$id}   = $path;
+      $docs_db{details}{$path} = [$module_mtime, $descr];
+    }
+    $self->{docs_db} = \%docs_db;
+  }
+
+  return $self->{docs_db};
+}
+
+
+
+sub has_index {
+  my ($self) = @_;
+  return $self->docs_db->{mtime};
+}
+
+
+
+
+#----------------------------------------------------------------------
+# RETRIEVING
+#----------------------------------------------------------------------
+
+
+
+sub search {
+  my ($self, $search_string, $start_record, $end_record, $get_doc_content) = @_;
+
+  # force Some::Module::Name into "Some::Module::Name" to prevent
+  # interpretation of ':' as a field name by Query::Parser
+  $search_string =~ s/(^|\s)([\w]+(?:::\w+)+)(\s|$)/$1"$2"$3/g;
+
+  my $indexer = Search::Indexer->new(dir       => $self->{index_dir},
+                                     wregex    => $wregex,
+                                     preMatch  => '[[',
+                                     postMatch => ']]');
+  my $search_result = $indexer->search($search_string, 'implicit_plus');
+  my $scores        = $search_result->{scores};
+  my $search_regex  = $search_result->{regex};
+  my @doc_ids       = sort {$scores->{$b} <=> $scores->{$a}} keys %$scores;
+  my $n_total       = @doc_ids;
+
+  # loop over the relevant slice slice
+  my @slice = @doc_ids[$start_record .. min($end_record, $#doc_ids)];
+  my @modules;
+  my $docs_db = $self->docs_db;
+  foreach my $doc_id (@slice) {
+    my $doc_path    = $docs_db->{path}{$doc_id};
+    my $description = $self->get_module_description($doc_path);
+    my $excerpts    = $indexer->excerpts($get_doc_content->($doc_path), $search_regex);
+    push @modules, [$doc_path, $description, $excerpts];
+  };
+
+  return {n_total => $n_total, modules => \@modules, killedWords => $search_result->{killedWords}};
+}
+
+
+
+
+sub modules_matching_prefix {
+  my ($self, $search_string) = @_;
+
+  length($search_string) >= 2 or die "module_list: arg too short";
+  $search_string =~ s[::][/]g;
+
+  my @paths = grep {/^\Q$search_string\E/} values %{$self->{doc_db}{path}};
+  s[/][::]g foreach @paths;
+
+  return @paths;
+}
+
+
+
+
+
+sub get_module_description {
+  my ($self, $path) = @_;
+
+  my $description = $self->{docs_db}{details}{$path}[1] or return;
+  $description =~ s/^.*?-\s*//;
+  return $description;
+}
+
+
+#----------------------------------------------------------------------
+# INDEXING
+#----------------------------------------------------------------------
+
+sub start_indexing_session {
+  my ($self) = @_;
+
+  # with option "from_scratch", throw away the old index
   if ($self->{from_scratch}) {
     unlink $_ foreach glob("$self->{index_dir}/*.bdb");
+    delete $self->{docs_db};
   }
 
 
@@ -265,28 +231,9 @@ sub new {
                            stopwords => \@stopwords);
 
 
-  # create or reuse the documents database
-  my $bdb_file = "$self->{index_dir}/docs.bdb";
-  tie %{$self->{docs}}, 'BerkeleyDB::Hash', -Filename => $bdb_file, -Flags => DB_CREATE
-    or die "open $bdb_file : $^E $BerkeleyDB::Error";
+  # reverse index $path => $id
+  $self->{docs_db}{id} = { reverse %{$self->{docs_db}{path}} } if $self->has_index;
 
-  # in case of incremental indexing : build in-memory reverse index of
-  # info already contained in %{$self->{docs}}
-  while (my ($id, $doc_descr) = each %{$self->{docs}}) {
-    $self->{max_doc_id} = max($id, $self->{max_doc_id});
-    my ($mtime, $path, $description) = split /\t/, $doc_descr;
-    $self->{previous_index}{$path}
-      = {id => $id, mtime => $mtime, description => $description};
-  }
-
-  bless $self, $class;
-}
-
-
-
-
-sub start {
-  my ($self) = @_;
 
   # turn on autoflush on STDOUT so that messages can be piped to the web app
   use IO::Handle;
@@ -296,10 +243,24 @@ sub start {
   my $t0 = time;
   print "FULLTEXT INDEX IN PROGRESS .. wait for message 'DONE' at the end of this page\n\n";
   $self->index_dir($_) foreach @{$self->{module_dirs}};
+
+  # free the indexer to unlock the .bdb files
+  delete $self->{search_indexer};
+
+  # write the "docs_db.txt" file (inventory of document ids with their path and descr)
+  printf "\n=============\nEnd of fulltext indexing -- writing docs_db\n";
+  my $docs_file  = "$self->{index_dir}/docs.txt";
+  open my $docs_fh, ">", $docs_file or die "open $docs_file: $!";
+  foreach my $id (sort {$a <=> $b} keys %{$self->{docs_db}{path}}) {
+    my $path    = $self->{docs_db}{path}{$id} or die "no path for doc $id";
+    my $details = $self->{docs_db}{details}{$path};
+    print $docs_fh join("\t", $id, $path, @$details), "\n";
+  }
+  close $docs_fh;
+
+  # close the report and set back to previous autoflush status
   my $t1 = time;
   printf "\n=============\nDONE. Total indexing time : %0.3f s.\n", $t1-$t0;
-
-  # back to previous autoflush status
   STDOUT->autoflush(0) if !$previous_autoflush_value;
 }
 
@@ -308,6 +269,9 @@ sub index_dir {
   my ($self, $rootdir, $path) = @_;
   return if $path && $path =~ /$ignore_dirs/;
 
+
+
+  
   my $dir = $rootdir;
   if ($path) {
     $dir .= "/$path";
@@ -315,11 +279,11 @@ sub index_dir {
       if grep {m[^\Q$dir\E]} @{$self->{module_dirs}};
   }
 
-  chdir $dir or return print "SKIP DIR $dir (chdir $dir: $!)\n";
-
   print "DIR $dir\n";
-  opendir my $dh, "." or die $^E;
-  my ($dirs, $files) = part { -d $_ ? 0 : 1} grep {!/^\./} readdir $dh;
+
+
+  opendir my $dh, $dir or die $^E;
+  my ($dirs, $files) = part { -d "$dir/$_" ? 0 : 1} grep {!/^\./} readdir $dh;
   $dirs ||= [], $files ||= [];
   closedir $dh;
 
@@ -330,7 +294,7 @@ sub index_dir {
   }
 
   foreach my $base (keys %extensions) {
-    $self->index_file($path, $base, $extensions{$base});
+    $self->index_file($dir, $path, $base, $extensions{$base});
   }
 
   my @subpaths = map {$path ? "$path/$_" : $_} @$dirs;
@@ -339,10 +303,10 @@ sub index_dir {
 
 
 sub index_file {
-  my ($self, $path, $file, $has_ext) = @_;
+  my ($self, $dir, $path, $file, $has_ext) = @_;
 
   my $fullpath = $path ? "$path/$file" : $file;
-  return print "SKIP $fullpath (shadowing)\n"
+  return print "SKIP $dir/$file (already met in a previous directory)\n"
     if $self->{seen_path}{$fullpath};
 
   $self->{seen_path}{$fullpath} = 1;
@@ -351,7 +315,7 @@ sub index_file {
  EXT:
   foreach my $ext (qw/pm pod/) {
     next EXT unless $has_ext->{$ext};
-    my $filename = "$file.$ext";
+    my $filename = "$dir/$file.$ext";
     ($size, $mtime) = (stat $filename)[7, 9] or die "stat $filename: $!";
     $size < $self->{max_size} or
       print "$filename too big ($size bytes), skipped " and next EXT;
@@ -360,14 +324,14 @@ sub index_file {
   }
 
 
-  my $prev_mtime = $self->{previous_index}{$fullpath}{mtime};
-  return print "SKIP $fullpath (index up to date)\n" if $prev_mtime && $mtime <= $prev_mtime;
+  my $prev_mtime = $self->{docs_db}{$fullpath}[0]; # NOTE: direct access to {docs_db}
+  return print "SKIP $dir/$file (index up to date)\n" if $prev_mtime && $mtime <= $prev_mtime;
 
   if (@filenames) {
-    my $old_doc_id = $self->{previous_index}{$fullpath}{id};
+    my $old_doc_id = $self->{docs_db}{id}{$fullpath}; # NOTE: direct access to {docs_db}
     my $doc_id     = $old_doc_id || ++$self->{max_doc_id};
 
-    print "INDEXING $fullpath (id $doc_id) ... ";
+    print "INDEXING $dir/$file (id $doc_id) ... ";
 
     my $t0 = time;
     my $buf = join "\n", map {path($_)->slurp} @filenames;
@@ -391,7 +355,8 @@ sub index_file {
     my $interval = time - $t0;
     printf "%0.3f s.", $interval;
 
-    $self->{docs}{$doc_id} = "$mtime\t$fullpath\t$description";
+    $self->{docs_db}{path}{$doc_id} = $fullpath;
+    $self->{docs_db}{details}{$fullpath} = [$mtime, $description];
   }
 
   print "\n";
