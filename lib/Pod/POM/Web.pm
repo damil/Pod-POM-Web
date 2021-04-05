@@ -261,7 +261,7 @@ sub index_frameset{
   # HTML title
   my $title = Plack::Util::encode_html($self->{page_title});
 
-  return $self->send_html(<<__EOHTML__);
+  return $self->respond_html(<<__EOHTML__);
 <html>
   <head><title>$title</title></head>
   <frameset cols="25%, 75%">
@@ -348,7 +348,7 @@ $formatted_sources
 </html>
 __EOHTML__
 
-  $self->send_html($html, $mtime);
+  $self->respond_html($html, $mtime);
 
 }
 
@@ -357,18 +357,16 @@ __EOHTML__
 sub serve_file {
   my ($self, $path, $extension) = @_;
 
-  my ($fullpath) = $self->find_file(module_dirs => $path)
-    or return $self->send_content({code => 404,
-                                   content   => "$path: no such file"});
+  my ($fullpath) = $self->find_files(module_dirs => $path)
+    or return $self->respond(code => 404,
+                             content   => "$path: no such file");
 
   my $mime_type  = MIME::Types->new->mimeTypeOf($extension);
   my $content    = path($fullpath)->slurp_raw;
   my $mtime      = (stat $fullpath)[9];
-  $self->send_content({
-    content   => $content,
-    mtime     => $mtime,
-    mime_type => $mime_type,
-  });
+  $self->respond(content   => $content,
+                 mtime     => $mtime,
+                 mime_type => $mime_type);
 }
 
 
@@ -390,12 +388,18 @@ sub serve_module {
   my $cpan_package = $self->{cpan_index}->search_packages( { package => $mod_name } );
   my $cpan_version = $cpan_package ? $cpan_package->{version} : undef;
 
+  my @special_podfilters;
+
   # special handling for perlfunc: remove args in links to function names
   # (for ex. L<C<open>|/open FILEHANDLE,MODE,EXPR> becomes L<C<open>|/open>
-  #
-  my @special_podfilters;
   push @special_podfilters, sub {$_[0] =~ s[(L<.*?\|/\w+)\s.*?>][$1>]g}
-    if $path eq 'perlfunc';
+    if $path =~ /\bperlfunc$/;
+
+  # special handling for perlre: the POM parser is not smart enough to parse
+  # L</C<< (?>pattern) >>>
+  push @special_podfilters, sub {$_[0] =~ s[\(\?>][(?E<gt>]g;
+                                 $_[0] =~ s[L</C<< (.*?) >>>][L<C<< $1 >>|/$1>]g}
+x1    if $path =~ /\bperlre$/;
 
   # POD content, preferably from the 1st file in list, otherwise from the 2nd
   my $pom     = $self->extract_POM($sources[0], @special_podfilters);
@@ -412,9 +416,9 @@ sub serve_module {
                             syntax_coloring => $coloring_package);
   my $html = $view->print($pom);
 
-  # again, special handling for perlfunc : ids should be just function names
+  # special handling for perlfunc : ids should be just function names
   $html =~ s/li id="(.*?)_.*?"/li id="$1"/g
-    if $path eq 'perlfunc';
+    if $path =~ /\bperlfunc$/;
 
   # special handling for 'perl' : hyperlinks to man pages
   if ($path =~ /\bperl$/) {
@@ -425,7 +429,7 @@ sub serve_module {
     $html =~ s[(<pre.*?</pre>)][$sub->($1)]egs;
   }
 
-  return $self->send_html($html, $mtime);
+  return $self->respond_html($html, $mtime);
 }
 
 
@@ -447,39 +451,8 @@ sub serve_script {
   my $html   = $view->print($pom);
 
   # return HTML
-  return $self->send_html($html, $mtime);
+  return $self->respond_html($html, $mtime);
 }
-
-
-
-
-sub find_module { 
-  my ($self, $path) = @_;
-  return $self->find_file(module_dirs => "$path.pod", "$path.pm",
-                                         "pod/$path.pod", "pods/$path.pod");
-}
-
-sub find_script {
-  my ($self, $path) = @_;
-  return $self->find_file(script_dirs => $path, "$path.pl", "path.bat");
-}
-
-sub find_file {
-  my ($self, $dirs_method, @file_candidates) = @_;
-
-  # try each dir in turn. The first successful search wins.
-  foreach my $dir ($self->$dirs_method) {
-    my @found = grep {-f} map {"$dir/$_"} @file_candidates;
-    return @found if @found; # returns a list because there could be both a *.pm and *.pod
-  }
-
-  # empty list if nothing is found
-  return;
-}
-
-
-
-
 
 
 sub extract_POM {
@@ -514,7 +487,7 @@ sub _no_such_module {
 </html>
 __EOHTML__
 
-  $self->send_html($html);
+  $self->respond_html($html);
 }
 
 
@@ -539,7 +512,7 @@ sub toc_for { # partial toc (called through Ajax)
   if ($prefix eq 'Pod') {   # Pod/perl* should not appear under Pod
     delete $entries->{$_} for grep /^perl/, keys %$entries;
   }
-  return $self->send_html($self->htmlize_entries($entries));
+  return $self->respond_html($self->htmlize_entries($entries));
 }
 
 
@@ -559,7 +532,7 @@ sub toc_perldocs {
     }
   }
 
-  return $self->send_html($self->htmlize_perldocs(\%perldocs));
+  return $self->respond_html($self->htmlize_perldocs(\%perldocs));
 }
 
 
@@ -571,7 +544,7 @@ sub toc_pragmas {
   delete $entries->{$_} for @ignore_toc_dirs, qw/pod pods inc/;
   delete $entries->{$_} for grep {/^perl/ or !/^[[:lower:]]/} keys %$entries;
 
-  return $self->send_html($self->htmlize_entries($entries));
+  return $self->respond_html($self->htmlize_entries($entries));
 }
 
 
@@ -602,7 +575,7 @@ sub toc_scripts {
                          content => $content);
   }
 
-  return $self->send_html($html);
+  return $self->respond_html($html);
 }
 
 
@@ -729,23 +702,21 @@ sub main_toc {
   s|[/\s(].*||s foreach @funcs;
   my $json_funcs = "[" . join(",", map {qq{"$_"}} uniq @funcs) . "]";
 
-  # perlVAR entries in JSON format for the DHTML autocompleter
+  # perlvar entries in JSON format for the DHTML autocompleter
   my @vars = map {$_->title} grep {!/->/} map {@$_} $self->perlvar_items;
   s|\s*X<.*||s foreach @vars;
   s|\\|\\\\|g  foreach @vars;
   s|"|\\"|g    foreach @vars;
   my $json_vars = "[" . join(",", map {qq{"$_"}} uniq @vars) . "]";
 
-  # TODO
-  # my $js_no_indexer = $no_indexer ? 'true' : 'false';
-  my $js_no_indexer = 'false';
-
+  # initial sections : perldocs, pragmas and scripts
   my @perl_sections = map {closed_node(
       label       => ucfirst($_),
       label_class => "TN_label small_title",
       attrs       =>  qq{TN:contentURL='toc/$_' id='$_'},
      )} qw/perldocs pragmas scripts/;
 
+  # following sections : alphabetical list of modules (details will be loaded dynamically)
   my $alpha_list = "";
   for my $letter ('A' .. 'Z') {
     $alpha_list .= closed_node (
@@ -759,9 +730,11 @@ sub main_toc {
                               content     => $alpha_list);
 
 
-  my $css_links = $self->css_links;
+
+  # build the HTML response
+  my $css_links  = $self->css_links;
   my $js_scripts = $self->js_scripts;
-  return $self->send_html(<<__EOHTML__);
+  return $self->respond_html(<<__EOHTML__);
 <html>
 <head>
   <base target="contentFrame">
@@ -769,10 +742,9 @@ sub main_toc {
   $js_scripts
   <script>
     var treeNavigator;
-    var perlfuncs = $json_funcs;
-    var perlvars  = $json_vars;
+    var perlfuncs  = $json_funcs;
+    var perlvars   = $json_vars;
     var completers = {};
-    var no_indexer = $js_no_indexer;
 
     function submit_on_event(event) {
         \$('search_form').submit();
@@ -881,12 +853,10 @@ sub main_toc {
               autoSuggestDelay: 400});
       completers.perlvar.onComplete = submit_on_event;
 
-      if (!no_indexer) {
-        completers.modlist  = new GvaScript.AutoCompleter(
+      completers.modlist  = new GvaScript.AutoCompleter(
              "search?source=modlist&search=",
              {minimumChars: 2, minWidth: 100, offsetX: -20, typeAhead: false});
-        completers.modlist.onComplete = submit_on_event;
-      }
+      completers.modlist.onComplete = submit_on_event;
 
       resize_tree_navigator();
       $select_ini
@@ -992,47 +962,45 @@ sub dispatch_search {
   }
 }
 
-
-
-
-
-my @_perlfunc_items; # simple-minded cache
-
 sub perlfunc_items {
   my ($self) = @_;
 
-  unless (@_perlfunc_items) {
+  # gather POM description of all functions in perlfunc -- lazy loading at first call
+  if (!$self->{perlfunc_items}) {
     my ($func_path)  = $self->find_module("perlfunc")
       or die "'perlfunc.pod' does not seem to be installed on this system";
     my $funcpom       = $self->extract_POM($func_path);
     my ($description) = grep {$_->title eq 'DESCRIPTION'} $funcpom->head1;
     my ($alphalist)
       = grep {$_->title =~ /^Alphabetical Listing/i} $description->head2;
-    @_perlfunc_items = $alphalist->over->[0]->item;
-  };
-  return @_perlfunc_items;
-}
+    my @items = $alphalist->over->[0]->item;
+    $self->{perlfunc_items} = \@items;
+  }
 
+  return @{$self->{perlfunc_items}};
+}
 
 sub search_perlfunc {
   my ($self, $func) = @_;
-  my @items = grep {$_->title =~ /^$func\b/} $self->perlfunc_items
-     or return $self->send_html("No documentation found for perl "
-                               ."function '<tt>$func</tt>'");
 
-  my $view    = $self->mk_view(path => "perlfunc/$func");
 
-  my @li_items = map {$_->present($view)} @items;
+  # HTML list of items matching the $func request
+  my @matching_items = grep {$_->title =~ /^$func\b/} $self->perlfunc_items
+     or return $self->respond_html("No documentation found for perl "
+                                  ."function '<tt>$func</tt>'");
+
+  my $view      = $self->mk_view(path => "perlfunc/$func");
+  my @li_items  = map {$_->present($view)} @matching_items;
+
+  # HTML response
   my $css_links = $self->css_links;
-
-  return $self->send_html(<<__EOHTML__);
+  return $self->respond_html(<<__EOHTML__);
 <html>
 <head>
   $css_links
 </head>
 <body>
 <h2>Extract from <a href="$self->{script_name}/perlfunc">perlfunc</a></h2>
-
 <ul>@li_items</ul>
 </body>
 __EOHTML__
@@ -1046,11 +1014,11 @@ sub perlvar_items {
   # lazily compute at first request; then store in $self
   unless ($self->{perlvar_items}) {
 
-    # get items defining variables
+    # gather POM items defining variables
     my ($var_path) = $self->find_module("perlvar")
       or die "'perlvar.pod' does not seem to be installed on this system";
     my $varpom     = $self->extract_POM($var_path);
-    my @items      = _extract_items($varpom);
+    my @items      = _extract_POM_items($varpom);
 
     # group items having common content
     my $tmp = [];
@@ -1070,14 +1038,17 @@ sub perlvar_items {
 sub search_perlvar {
   my ($self, $var) = @_;
 
+  # HTML list of items matching the $func request
   my @items = grep {any { $_->title =~ /^\Q$var\E(\s|$)/ } @$_}
                    $self->perlvar_items
-     or return $self->send_html("No documentation found for perl "
-                               ."variable '<tt>$var</tt>'");
+     or return $self->respond_html("No documentation found for perl "
+                                  ."variable '<tt>$var</tt>'");
   my $view      = $self->mk_view(path => "perlvar/$var");
-  my $css_links = $self->css_links;
   my @li_items  = map {$_->present($view)} map {@$_} @items;
-  return $self->send_html(<<__EOHTML__);
+
+  # HTML response
+  my $css_links = $self->css_links;
+  return $self->respond_html(<<__EOHTML__);
 <html>
 <head>
   $css_links
@@ -1100,6 +1071,7 @@ sub search_perlfaq {
 
   my $view = $self->mk_view(path => "perlfaq/$faq_entry");
 
+  # gather headings that match the regex in any of the perlfaq* pages
  FAQ:
   foreach my $faq (map {"perlfaq$_"} 1..9) {
     my ($faq_path) = $self->find_module($faq)
@@ -1114,9 +1086,10 @@ sub search_perlfaq {
     $n_answers += @nodes;
   }
 
+  # HTML response
   my $css_links  = $self->css_links;
   my $js_scripts = $self->js_scripts;
-  return $self->send_html(<<__EOHTML__);
+  return $self->respond_html(<<__EOHTML__);
 <html>
 <head>
   $css_links
@@ -1144,6 +1117,7 @@ __EOHTML__
 sub search_fulltext {
   my ($self, $params) = @_;
 
+  # start of HTML page
   my $css_links = $self->css_links;
   my $html = <<__EOHTML__;
 <html>
@@ -1180,45 +1154,48 @@ sub search_fulltext {
 <div id="ft_results">
 __EOHTML__
 
+  # main content
   if (!$self->indexer->has_index) {
     $html .= "No full-text index found in $self->{index_dir}."
           .  "Please use the form above to generate the index";
   }
   else {
     my $search_string = $params->{search};
+    my $count         = $params->{count} || 50;
+    my $start_record  = $params->{start} || 0;
+    my $end_record    = $start_record + $count - 1;
 
-    my $count        = $params->{count} || 50;
-    my $start_record = $params->{start} || 0;
-    my $end_record   = $start_record + $count - 1;
-
+    # callback function used by the indexer to access the content of documents
     my $get_doc_content = sub {
       my $path = shift;
       my @filenames = $self->find_module($path);
       return join "\n", map {decode("Detect", path($_)->slurp_raw)} @filenames;
     };
 
+    # results from the indexer
     my $results = $self->indexer->search($search_string, $start_record, $end_record,
                                          $get_doc_content);
-
     my $killedWords = join ", ", @{$results->{killedWords}};
     $killedWords &&= " (ignoring words : $killedWords)";
 
+    # adjust numbers
     my $n_in_slice = @{$results->{modules}};
-    $end_record = $start_record + $n_in_slice -1;
+    $end_record    = $start_record + $n_in_slice -1;
+    my $n_total    = $results->{n_total};
 
-    my $n_total = $results->{n_total};
-
-
+    # build navigation links
     my $base_url  = "?source=full-text&search=$params->{search}";
     my $nav_links = $self->nav_links($base_url, $start_record, $end_record, $count, $n_total);
 
+    # more HTML content
     $html .= "<b>Full-text search</b> for '$search_string'$killedWords<br>"
            . "$nav_links<hr>\n";
 
+    # generate HTML for each result 
     foreach my $module (@{$results->{modules}}) {
       my ($path, $description, $excerpts) = @$module;
       foreach (@$excerpts) {
-        s/&/&amp;/g,  s/</&lt;/g, s/>/&gt;/g; # replace entities
+        s/&/&amp;/g,  s/</&lt;/g, s/>/&gt;/g;          # replace entities
         s/\[\[/<span class='hl'>/g, s/\]\]/<\/span>/g; # highlight
       }
       my $lst_excerpts = join "<span class='sep'>/</span>", @$excerpts;
@@ -1229,14 +1206,15 @@ __EOHTML__
              . "<br>"
              . "<small>$lst_excerpts</small>"
              . "</p>";
-
     }
     $html .= "<hr>$nav_links\n";
   }
 
+  # finish the page
   $html .= "</div></body></html>";
 
-  return $self->send_html($html);
+  # respond
+  return $self->respond_html($html);
 }
 
 
@@ -1266,17 +1244,14 @@ sub nav_links {
 sub modules_matching_prefix { # called by Ajax
   my ($self, $search_string) = @_;
 
-
   $self->indexer->has_index
     or die "module list : no index";
-
 
   my @matching_modules = $self->indexer->modules_matching_prefix($search_string);
   my $json    = "[" . join(",", map {qq{"$_"}} sort @matching_modules) . "]";
 
-  return $self->send_content({content   => $json,
-                              mime_type => 'application/x-json'});
-
+  return $self->respond(content   => $json,
+                        mime_type => 'application/x-json');
 }
 
 
@@ -1289,19 +1264,54 @@ sub modules_matching_prefix { # called by Ajax
 sub ft_index {
   my ($self, $req) = @_;
 
-  my $command = "index";
-  $command .= "(from_scratch=>1)" if $req->param('from_scratch');
-
-  open my $pipe, '-|', qq{perl -Ilib -MPod::POM::Web -e "$command"};
-
+  # free the indexer
   delete $self->{indexer};
 
+  # start another process for updating or building the fulltext index
+  my $command = "index";
+  $command .= "(from_scratch=>1)" if $req->param('from_scratch');
+  open my $pipe, '-|', qq{perl -Ilib -MPod::POM::Web -e "$command"};
+
+  # pipe progress reports from the subprocess into the HTTP response,
+  # using Plack's streaming API
   my $res = Plack::Response->new(200);
   $res->content_type('text/plain');
   $res->body($pipe);
   return $res->finalize;
 }
 
+#----------------------------------------------------------------------
+# encapsulation of Plack response
+#----------------------------------------------------------------------
+
+
+sub respond_html {
+  my ($self, $html, $mtime) = @_;
+
+  $self->respond(content => encode_utf8($html),
+                 code    => 200,
+                 mtime   => $mtime,
+                 charset => 'UTF-8');
+}
+
+
+
+sub respond {
+  my ($self, %args) = @_;
+
+  my $charset   = $args{charset};
+  my $length    = length $args{content};
+  my $mime_type = $args{mime_type} || "text/html";
+     $mime_type .= "; charset=$charset" if $charset and $mime_type =~ /html/;
+  my $modified  = gmtime $args{mtime};
+  my $code      = $args{code} || 200;
+
+  my $headers = {Content_type   => $mime_type,
+                 Content_length => $length};
+  $headers->{Last_modified} = $modified if $args{mtime};
+  my $r = Plack::Response->new($code, $headers, $args{content});
+  $r->finalize;
+}
 
 
 #----------------------------------------------------------------------
@@ -1324,38 +1334,30 @@ sub mk_view {
 
 
 
-sub send_html {
-  my ($self, $html, $mtime) = @_;
-
-  # dirty hack for MSIE8 (TODO: send proper HTTP header instead)
-  $html =~ s[<head>]
-            [<head>\n<meta http-equiv="X-UA-Compatible" content="IE=edge">];
-
-  $self->send_content({content => encode_utf8($html),
-                       code    => 200,
-                       mtime   => $mtime,
-                       charset => 'UTF-8'});
+sub find_module { 
+  my ($self, $path) = @_;
+  return $self->find_files(module_dirs => "$path.pod", "$path.pm",
+                                          "pod/$path.pod", "pods/$path.pod");
 }
 
-
-
-sub send_content {
-  my ($self, $args) = @_;
-
-  my $charset   = $args->{charset};
-  my $length    = length $args->{content};
-  my $mime_type = $args->{mime_type} || "text/html";
-     $mime_type .= "; charset=$charset" if $charset and $mime_type =~ /html/;
-  my $modified  = gmtime $args->{mtime};
-  my $code      = $args->{code} || 200;
-
-
-  my $headers = {Content_type   => $mime_type,
-                 Content_length => $length};
-  $headers->{Last_modified} = $modified if $args->{mtime};
-  my $r = Plack::Response->new($code, $headers, $args->{content});
-  $r->finalize;
+sub find_script {
+  my ($self, $path) = @_;
+  return $self->find_files(script_dirs => $path, "$path.pl", "path.bat");
 }
+
+sub find_files {
+  my ($self, $dirs_method, @file_candidates) = @_;
+
+  # try each dir in turn. The first successful search wins.
+  foreach my $dir ($self->$dirs_method) {
+    my @found = grep {-f} map {"$dir/$_"} @file_candidates;
+    return @found if @found; # returns a list because there could be both a *.pm and *.pod
+  }
+
+  # empty list if nothing is found
+  return;
+}
+
 
 
 sub css_links {
@@ -1435,12 +1437,12 @@ sub parse_version {
 
 
 
-sub _extract_items { # recursively grab all nodes of type 'item'
+sub _extract_POM_items { # recursively grab all nodes of type 'item'
   my $node = shift;
 
   for ($node->type) {
     /^item/            and return ($node);
-    /^(pod|head|over)/ and return map {_extract_items($_)} $node->content;
+    /^(pod|head|over)/ and return map {_extract_POM_items($_)} $node->content;
   }
   return ();
 }
@@ -1484,43 +1486,44 @@ sub view_seq_text {
 
 # some adaptations to SUPER::view_seq_link
 sub view_seq_link {
-    my ($self, $link) = @_;
+  my ($self, $link) = @_;
 
-    # we handle the L<link_text|...> syntax here, because we also want
-    # link_text for http URLS (not supported by SUPER::view_seq_link)
-    my $link_text;
-    $link =~ s/^([^|]+)\|// and $link_text = $1;
 
-    # links to external resources will open in a blank page
-    my $is_external_resource = ($link =~ m[^\w+://]);
+  # we handle the L<link_text|...> syntax here, because we also want
+  # link_text for http URLS (not supported by SUPER::view_seq_link)
+  my $link_text;
+  $link =~ s/^([^|]+)\|// and $link_text = $1;
 
-    # call parent and reparse the result
-    my $linked = $self->SUPER::view_seq_link($link);
-    my ($url, $label) = ($linked =~ m[^<a href="(.*?)">(.*)</a>]);
+  # links to external resources will open in a blank page
+  my $is_external_resource = ($link =~ m[^\w+://]);
 
-    # fix link for 'hash' part of the url
-    $url =~ s[#(.*)]['#' . _title_to_id($1)]e unless $is_external_resource;
+  # call parent and reparse the result
+  my $linked = $self->SUPER::view_seq_link($link);
+  my ($url, $label) = ($linked =~ m[^<a href="(.*?)">(.*)</a>]);
 
-    # if explicit link_text given by client, take that as label, unchanged
-    if ($link_text) {
-      $label = $link_text;
-    }
-    # if "$page/$section", replace by "$section in $page"
-    elsif ($label !~ m{^\w+://}s) { # but only if not a full-blown URL
-      $label =~ s[^(.*?)/(.*)$][$1 ? "$2 in $1" : $2]e ;
-    }
+  # fix link for 'hash' part of the url
+  $url =~ s[#(.*)]['#' . _title_to_id($1)]e unless $is_external_resource;
 
-    # return link (if external resource, opens in a new browser window)
-    my $target = $is_external_resource ? " target='_blank'" : "";
-    return qq{<a href="$url"$target>$label</a>};
+  # if explicit link_text given by client, take that as label, unchanged
+  if ($link_text) {
+    $label = $link_text;
+  }
+  # if "$page/$section", replace by "$section in $page"
+  elsif ($label !~ m{^\w+://}s) { # but only if not a full-blown URL
+    $label =~ s[^(.*?)/(.*)$][$1 ? "$2 in $1" : $2]e ;
+  }
+
+  # return link (if external resource, opens in a new browser window)
+  my $target = $is_external_resource ? " target='_blank'" : "";
+  return qq{<a href="$url"$target>$label</a>};
 }
 
 
 
 sub view_seq_link_transform_path {
-    my($self, $page) = @_;
-    $page =~ s[::][/]g;
-    return "$self->{script_name}/$page";
+  my($self, $page) = @_;
+  $page =~ s[::][/]g;
+  return "$self->{script_name}/$page";
 }
 
 
@@ -1553,8 +1556,6 @@ sub _title_to_id {
 
 sub view_pod {
   my ($self, $pom) = @_;
-
-  $DB::single = 1; 
 
   # compute view
   my $content = $pom->content->present($self)
@@ -1774,8 +1775,8 @@ sub make_toc {
   my $sub_items = $item->$method;
 
   foreach my $sub_item (@$sub_items) {
-    my $title    = $sub_item->title->present($self);
-    my $id       = _title_to_id($title);
+    my $title   = $sub_item->title->present($self);
+    my $id      = _title_to_id($title);
 
     my $node_content = $self->make_toc($sub_item, $level + 1);
     my $class        = $node_content ? "TN_node" : "TN_leaf";
@@ -2178,13 +2179,7 @@ under the same terms as Perl itself.
 =head1 TODO
 
   - real tests !
-  - factorization (esp. initial <head> in html pages)
-  - use Getopts to choose colouring package, toggle CPAN, etc.
   - declare Pod::POM bugs
       - perlre : line 1693 improper parsing of L<C<< (?>pattern) >>>
    - bug: doc files taken as pragmas (lwptut, lwpcook, pip, pler)
-   - exploit doc index X<...>
    - do something with perllocal (installation history)
-   - restrict to given set of paths/ modules
-       - need to change toc (no perlfunc, no scripts/pragmas, etc)
-       - treenav with letter entries or not ?
