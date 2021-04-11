@@ -4,26 +4,24 @@ package Pod::POM::Web; # see doc at end of file
 use strict;
 use warnings;
 use 5.010;
-no warnings 'uninitialized';
+# no warnings 'uninitialized';
 
-use parent 'Plack::Component';              # web app based on Plack architecture
-use Plack::Request;                         # Plack API for an HTTP request
-use Plack::Response;                        # Plack API for an HTTP response
-use Plack::Util;                            # encode_html()
-use Pod::POM 0.25;                          # parsing Pod
-use List::Util      qw/min max/;            # numeric minimum & maximum
-use List::MoreUtils qw/uniq firstval any/;  # list utilities
-use Module::CoreList;                       # asking if a module belongs to Perl core
-use MIME::Types;                            # translate file extension into MIME type
-use Alien::GvaScript 1.021000;              # javascript files
-use Config;                                 # where are the perl script directories
-
-use Module::Metadata 1.000033;              # get version number from module
-use Encode          qw/decode encode_utf8/; # utf8 encoding
-use Encode::Detect;                         # automatic encoding recognition
-use Params::Validate qw/validate_with SCALAR ARRAYREF/; # check validity of parameters
-use CPAN::Common::Index::Mux::Ordered;      # current CPAN version of a module
-use Path::Tiny       qw/path/;
+use parent 'Plack::Component';                             # web app based on Plack architecture
+use Plack::Request;                                        # Plack API for an HTTP request
+use Plack::Response;                                       # Plack API for an HTTP response
+use Plack::Util;                                           # encode_html()
+use Pod::POM 0.25;                                         # parsing Pod
+use List::Util          qw/min max/;                       # numeric minimum & maximum
+use List::MoreUtils     qw/uniq firstval any/;             # list utilities
+use Module::CoreList;                                      # asking if a module belongs to Perl core
+use MIME::Types;                                           # translate file extension into MIME type
+use Alien::GvaScript 1.021000;                             # javascript files
+use Config;                                                # to find where are the perl script directories
+use Encode              qw/encode_utf8/;                   # utf8 encoding
+use Params::Validate    qw/validate_with SCALAR ARRAYREF/; # check validity of parameters
+use CPAN::Common::Index::Mux::Ordered;                     # current CPAN version of a module
+use Path::Tiny          qw/path/;                          # easy access to file contents
+use Pod::POM::Web::Util qw/slurp_native_or_utf8 parse_version extract_POM_items/;
 
 
 # other modules that may be required dynamically :
@@ -81,6 +79,9 @@ my @podfilters = (
 
   # Pod::POM fails to parse correctly when there is an initial blank line
   sub { $_[0] =~ s/\A\s*// },
+
+  # Pod::POM only understands =encoding utf8, not utf-8
+  sub { $_[0] =~ s/=encoding utf-8/=encoding utf8/i; },
 
 );
 
@@ -153,7 +154,7 @@ sub index {
   my ($class, %options) = @_;
 
   my $self = $class->new();
-  $self->indexer->start_indexing_session;
+  $self->indexer(%options)->start_indexing_session;
 }
 
 
@@ -302,7 +303,7 @@ sub serve_source {
    );
   my $formatted_sources = "";
   foreach my $file (@files) {
-    my $source = decode("Detect", path($file)->slurp_raw);
+    my $source = slurp_native_or_utf8($file);
     $source =~ s/\r\n/\n/g;
     my $formatted_source = $view->view_verbatim($source);
     $formatted_sources .= "<p/><h2>$file</h2><p/><pre>$formatted_source</pre>";
@@ -369,8 +370,6 @@ sub serve_file {
                  mime_type => $mime_type);
 }
 
-
-
 sub serve_module {
   my ($self, $path) = @_;
   $path =~ s[::][/]g; # just in case, if called as /perldoc/Foo::Bar
@@ -388,18 +387,8 @@ sub serve_module {
   my $cpan_package = $self->{cpan_index}->search_packages( { package => $mod_name } );
   my $cpan_version = $cpan_package ? $cpan_package->{version} : undef;
 
-  my @special_podfilters;
-
-  # special handling for perlfunc: remove args in links to function names
-  # (for ex. L<C<open>|/open FILEHANDLE,MODE,EXPR> becomes L<C<open>|/open>
-  push @special_podfilters, sub {$_[0] =~ s[(L<.*?\|/\w+)\s.*?>][$1>]g}
-    if $path =~ /\bperlfunc$/;
-
-  # special handling for perlre: the POM parser is not smart enough to parse
-  # L</C<< (?>pattern) >>>
-  push @special_podfilters, sub {$_[0] =~ s[\(\?>][(?E<gt>]g;
-                                 $_[0] =~ s[L</C<< (.*?) >>>][L<C<< $1 >>|/$1>]g}
-x1    if $path =~ /\bperlre$/;
+  # special pre-processing for some specific paths
+  my @special_podfilters = $self->_special_podfilters($path);
 
   # POD content, preferably from the 1st file in list, otherwise from the 2nd
   my $pom     = $self->extract_POM($sources[0], @special_podfilters);
@@ -433,6 +422,31 @@ x1    if $path =~ /\bperlre$/;
 }
 
 
+sub _special_podfilters {
+  my ($self, $path) = @_;
+
+  if ($path =~ /\bperlfunc$/) {
+    # special handling for perlfunc: remove args in links to function names
+    # (for ex. L<C<open>|/open FILEHANDLE,MODE,EXPR> becomes L<C<open>|/open>
+    return (sub {$_[0] =~ s[(L<.*?\|/\w+)\s.*?>][$1>]g});
+  }
+  elsif ($path =~ /\bperlre$/) {
+    # special handling for perlre: the POM parser is not smart enough to parse
+    # L</C<< (?>pattern) >>>, so we translate them into L<C<< (?E<gt>pattern) >>|/(?E<gt>pattern)>
+    return (sub {$_[0] =~ s[\(\?>][(?E<gt>]g;
+                 $_[0] =~ s[L</C<< (.*?) >>>][L<C<< $1 >>|/$1>]g});
+  }
+  elsif ($path eq 'POSIX') {
+    # special handling for POSIX: the POM parser is not smart enough to parse
+    # L<C<function>(3)>, so we translate them into C<L<function(3)>>
+    return (sub {$_[0] =~ s[L<C<(\w+)>\((\d)\)>][C<L<$1($2)>>]g});
+  }
+  else {
+    return ();
+  }
+}
+
+
 sub serve_script {
   my ($self, $path) = @_;
 
@@ -458,7 +472,7 @@ sub serve_script {
 sub extract_POM {
   my ($self, $sourcefile, @more_podfilters) = @_;
 
-  my $pod    = path($sourcefile)->slurp;
+  my $pod    = slurp_native_or_utf8($sourcefile);
   $_->($pod) foreach @podfilters, @more_podfilters;
   my $parser = Pod::POM->new;
   my $pom    = $parser->parse_text($pod) or die $parser->error;
@@ -527,8 +541,8 @@ sub toc_perldocs {
 
     # just keep the perl* entries, without subdir prefix
     foreach my $key (grep /^perl/, keys %$entries) {
-      $perldocs{$key} = $entries->{$key};
-      $perldocs{$key}{node} =~ s[^subdir/][]i;
+      $perldocs{$key}       = $entries->{$key};
+      $perldocs{$key}{node} =~ s[^$subdir/][]i;
     }
   }
 
@@ -639,12 +653,14 @@ sub htmlize_perldocs {
 
     # gather leaf entries
     my @leaves;
-    while ($content =~ /^\s*(perl\S*?)\s*\t(.+)/gm) {
+    while ($content =~ /^\s*(perl\S*)(?:\h+(\w.+))?/gm) {
       my ($ref, $descr) = ($1, $2);
+      my $attrs = qq{id='$ref'};
+      $attrs .= qq{ title='$descr'} if $descr;
       my $entry = delete $perldocs->{$ref} or next;
       push @leaves, {label => $ref,
                      href  => $entry->{node},
-                     attrs => qq{id='$ref' title='$descr'}};
+                     attrs => $attrs};
     }
     # sort and transform into HTML
     @leaves = map {leaf(%$_)}
@@ -668,6 +684,8 @@ sub htmlize_perldocs {
 sub htmlize_entries {
   my ($self, $entries) = @_;
   my $html = "";
+  my $has_index = $self->indexer->has_index;
+
   foreach my $name (sort {uc($a) cmp uc($b)} keys %$entries) {
     my $entry = $entries->{$name};
     (my $id = $entry->{node}) =~ s[/][::]g;
@@ -681,7 +699,7 @@ sub htmlize_entries {
     if ($entry->{pod}) {
       $args{href}     = $entry->{node};
       $args{module_descr} = $self->indexer->get_module_description($entry->{node})
-        if $self->indexer->has_index;
+        if $has_index;
     }
     $html .= generic_node(%args);
   }
@@ -728,8 +746,6 @@ sub main_toc {
   my $modules = generic_node (label       => "Modules",
                               label_class => "TN_label small_title",
                               content     => $alpha_list);
-
-
 
   # build the HTML response
   my $css_links  = $self->css_links;
@@ -1018,7 +1034,7 @@ sub perlvar_items {
     my ($var_path) = $self->find_module("perlvar")
       or die "'perlvar.pod' does not seem to be installed on this system";
     my $varpom     = $self->extract_POM($var_path);
-    my @items      = _extract_POM_items($varpom);
+    my @items      = extract_POM_items($varpom);
 
     # group items having common content
     my $tmp = [];
@@ -1080,9 +1096,18 @@ sub search_perlfaq {
     my @questions = map {grep {$_->title =~ $regex} $_->head2} $faqpom->head1
       or next FAQ;
     my @nodes = map {$view->print($_)} @questions;
+    my $html  = join "", @nodes;
+
+    my @split_on_tags = split /(<.*?>)/, $html;
+    for (my $i = 0; $i < @split_on_tags; $i += 2) {
+      $split_on_tags[$i] =~ s[($regex)][<span class="hl">$1</span>]g;
+    }
+    $html = join "", @split_on_tags;
+
+
     $answers .= generic_node(label     => "Found in $faq",
                              label_tag => "h2",
-                             content   => join("", @nodes));
+                             content   => $html);
     $n_answers += @nodes;
   }
 
@@ -1094,6 +1119,9 @@ sub search_perlfaq {
 <head>
   $css_links
   $js_scripts
+  <style>
+    .hl  {background-color: lightpink}
+  </style>
   <script>
     var treeNavigator;
     function setup() {
@@ -1104,7 +1132,7 @@ sub search_perlfaq {
 </head>
 <body>
 <h1>Extracts from <a href="$self->{script_name}/perlfaq">perlfaq</a></h1><br>
-<em>searching for '$faq_entry' : $n_answers answers</em><br><br>
+<em>searched for regex '$faq_entry' in titles of faq documents: $n_answers answers</em><br><br>
 <div id='TN_tree'>
 $answers
 </div>
@@ -1128,6 +1156,8 @@ sub search_fulltext {
     .sep {font-size:110%; font-weight: bolder; color: magenta;
           padding-left: 8px; padding-right: 8px}
     .hl  {background-color: lightpink}
+    .reindex_form {float: right; border: 3px double #888;}
+
   </style>
   <script>
     function confirm_reindex() {
@@ -1143,7 +1173,7 @@ sub search_fulltext {
 </head>
 <body>
 
-<form style="float:right" action="$self->{script_name}/ft_index"
+<form class="reindex_form" action="$self->{script_name}/ft_index"
   onsubmit="return confirm_reindex()">
 (Re)generate index
 <label><input type=radio name=from_scratch value=0 checked>incrementally</label>
@@ -1169,7 +1199,7 @@ __EOHTML__
     my $get_doc_content = sub {
       my $path = shift;
       my @filenames = $self->find_module($path);
-      return join "\n", map {decode("Detect", path($_)->slurp_raw)} @filenames;
+      return join "\n", map {slurp_native_or_utf8($_)} @filenames;
     };
 
     # results from the indexer
@@ -1269,7 +1299,8 @@ sub ft_index {
 
   # start another process for updating or building the fulltext index
   my $command = "index";
-  $command .= "(from_scratch=>1)" if $req->param('from_scratch');
+  $command .= "(from_scratch=>1)" if $req->parameters->get('from_scratch');
+  warn "STARTING COMMAND $command\n";
   open my $pipe, '-|', qq{perl -Ilib -MPod::POM::Web -e "$command"};
 
   # pipe progress reports from the subprocess into the HTTP response,
@@ -1303,12 +1334,10 @@ sub respond {
   my $length    = length $args{content};
   my $mime_type = $args{mime_type} || "text/html";
      $mime_type .= "; charset=$charset" if $charset and $mime_type =~ /html/;
-  my $modified  = gmtime $args{mtime};
   my $code      = $args{code} || 200;
-
-  my $headers = {Content_type   => $mime_type,
-                 Content_length => $length};
-  $headers->{Last_modified} = $modified if $args{mtime};
+  my $headers   = {Content_type   => $mime_type,
+                   Content_length => $length};
+  $headers->{Last_modified} = gmtime($args{mtime}) if $args{mtime};
   my $r = Plack::Response->new($code, $headers, $args{content});
   $r->finalize;
 }
@@ -1390,7 +1419,7 @@ sub js_scripts {
 sub generic_node {
   my %args = @_;
   $args{class}       ||= "TN_node";
-  $args{attrs}       &&= " $args{attrs}";
+  my $attrs            = $args{attrs} ? " $args{attrs}" : "";
   $args{content}     ||= "";
   $args{content}     &&= qq{<div class="TN_content">$args{content}</div>};
   my ($default_label_tag, $label_attrs)
@@ -1402,7 +1431,7 @@ sub generic_node {
     my $module_descr = Plack::Util::encode_html($args{module_descr});
     $label_attrs .= qq{ title="$module_descr"};
   }
-  return qq{<div class="$args{class}"$args{attrs}>}
+  return qq{<div class="$args{class}"$attrs>}
        .    qq{<$args{label_tag} class="$args{label_class}"$label_attrs>}
        .         $args{label}
        .    qq{</$args{label_tag}>}
@@ -1419,33 +1448,6 @@ sub leaf {
   return generic_node(@_, class => "TN_leaf");
 }
 
-
-#----------------------------------------------------------------------
-# utility functions (not methods)
-#----------------------------------------------------------------------
-
-
-
-sub parse_version {
-  my ($file_name) = @_;
-
-  my $mm = Module::Metadata->new_from_file($file_name)
-    or die "couldn't create Module::Metadata";
-
-  return $mm->version;
-}
-
-
-
-sub _extract_POM_items { # recursively grab all nodes of type 'item'
-  my $node = shift;
-
-  for ($node->type) {
-    /^item/            and return ($node);
-    /^(pod|head|over)/ and return map {_extract_POM_items($_)} $node->content;
-  }
-  return ();
-}
 
 
 1;
@@ -2179,7 +2181,5 @@ under the same terms as Perl itself.
 =head1 TODO
 
   - real tests !
-  - declare Pod::POM bugs
-      - perlre : line 1693 improper parsing of L<C<< (?>pattern) >>>
-   - bug: doc files taken as pragmas (lwptut, lwpcook, pip, pler)
-   - do something with perllocal (installation history)
+  - bug: doc files taken as pragmas (lwptut, lwpcook, pip, pler)
+  - do something with perllocal (installation history)

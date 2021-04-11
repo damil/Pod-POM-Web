@@ -6,27 +6,32 @@ use strict;
 use warnings;
 
 use Pod::POM;
+use Pod::POM::Web::Util qw/slurp_native_or_utf8/;
 use List::Util       qw/min max/;
 use List::MoreUtils  qw/part/;
-use Search::Indexer 0.75;
+use Search::Indexer;
 use Path::Tiny       qw/path/;
 use Params::Validate qw/validate_with SCALAR BOOLEAN ARRAYREF/;
 use Time::HiRes      qw/time/;
-use BerkeleyDB;
-
-
+use IO::Handle;      # for the 'autoflush' method
+use Text::Transliterator::Unaccent;
 our $VERSION = 1.23;
 
 #----------------------------------------------------------------------
 # GLOBAL VARIABLES
 #----------------------------------------------------------------------
 
-
+# regex for Perl identifiers
 my $id_regex = qr/(?![0-9])       # don't start with a digit
                   \w\w+           # start with 2 or more word chars ..
                   (?:::\w+)*      # .. and  possibly ::some::more::components
                  /x;
 
+
+
+
+
+# what is considered a "word" when parsing Perl sources
 my $wregex   = qr/(?:                  # either a Perl variable:
                     (?:\$\#?|\@|\%)    #   initial sigil
                     (?:                #     followed by
@@ -42,7 +47,16 @@ my $wregex   = qr/(?:                  # either a Perl variable:
                      $id_regex         # a plain word or module name
                  )/x;
 
+# override default Search::Indexer wfilter, for better support for utf8
+my $unaccenter = Text::Transliterator::Unaccent->new(upper => 0);
+my $wfilter  = sub {
+  my $word = lc($_[0]);
+  $unaccenter->($word);
+  return $word;
+};
 
+
+# common words not to be indexed
 my @stopwords = (
   'a' .. 'z', '_', '0' .. '9',
   qw/__data__ __end__ $class $self
@@ -72,20 +86,21 @@ my @stopwords = (
      you your/
 );
 
-
+# directories not to be indexed
 my $ignore_dirs = qr[
-      auto | unicore | DateTime/TimeZone | DateTime/Locale    ]x;
+      auto | unicore | DateTime/TimeZone | DateTime/Locale | Text/Unidecode
+  ]x;
 
+# headings not to be indexed
 my $ignore_headings = qr[
       SYNOPSIS | DESCRIPTION | METHODS   | FUNCTIONS |
-      BUGS     | AUTHOR      | SEE\ ALSO | COPYRIGHT | LICENSE ]x;
+      BUGS     | AUTHOR      | SEE\ ALSO | COPYRIGHT | LICENSE
+  ]x;
 
 
 #----------------------------------------------------------------------
 # CONSTRUCTOR
 #----------------------------------------------------------------------
-
-
 
 sub new {
   my $class = shift;
@@ -102,9 +117,14 @@ sub new {
     allow_extra => 0,
    );
 
+
   bless $self, $class;
 }
 
+
+#----------------------------------------------------------------------
+# LAZY ATTRIBUTES
+#----------------------------------------------------------------------
 
 sub docs_db {
   my ($self) = @_;
@@ -117,7 +137,7 @@ sub docs_db {
   if ($mtime > $last_mtime) {
     # read the file and cache the results
     my %docs_db = (mtime => $mtime);
-    open my $docs_fh, "<", $docs_file or die "open $docs_file: $!";
+    open my $docs_fh, "<:encoding(UTF-8)", $docs_file or die "open $docs_file: $!";
     while (<$docs_fh>) {
       chomp;
       my ($id, $path, $module_mtime, $descr) = split /\t/;
@@ -131,20 +151,16 @@ sub docs_db {
 }
 
 
-
 sub has_index {
   my ($self) = @_;
-  return $self->docs_db->{mtime};
+
+  return $self->docs_db;
 }
-
-
 
 
 #----------------------------------------------------------------------
 # RETRIEVING
 #----------------------------------------------------------------------
-
-
 
 sub search {
   my ($self, $search_string, $start_record, $end_record, $get_doc_content) = @_;
@@ -155,6 +171,7 @@ sub search {
 
   my $indexer = Search::Indexer->new(dir       => $self->{index_dir},
                                      wregex    => $wregex,
+                                     wfilter   => $wfilter,
                                      preMatch  => '[[',
                                      postMatch => ']]');
   my $search_result = $indexer->search($search_string, 'implicit_plus');
@@ -178,8 +195,6 @@ sub search {
 }
 
 
-
-
 sub modules_matching_prefix {
   my ($self, $search_string) = @_;
 
@@ -191,9 +206,6 @@ sub modules_matching_prefix {
 
   return @paths;
 }
-
-
-
 
 
 sub get_module_description {
@@ -217,7 +229,10 @@ sub start_indexing_session {
     unlink $_ foreach glob("$self->{index_dir}/*.bdb");
     delete $self->{docs_db};
   }
-
+  elsif ($self->docs_db) {
+    # if there is already an existing index, build a reverse hash $path => $id
+    $self->{docs_db}{id} = { reverse %{$self->{docs_db}{path}} };
+  }
 
   # initialization of other attributes
   $self->{seen_path}      = {},
@@ -228,15 +243,10 @@ sub start_indexing_session {
                            writeMode => 1,
                            positions => $self->{positions},
                            wregex    => $wregex,
+                           wfilter   => $wfilter,
                            stopwords => \@stopwords);
 
-
-  # reverse index $path => $id
-  $self->{docs_db}{id} = { reverse %{$self->{docs_db}{path}} } if $self->has_index;
-
-
   # turn on autoflush on STDOUT so that messages can be piped to the web app
-  use IO::Handle;
   my $previous_autoflush_value = STDOUT->autoflush(1);
 
   # main indexing loop
@@ -250,7 +260,7 @@ sub start_indexing_session {
   # write the "docs_db.txt" file (inventory of document ids with their path and descr)
   printf "\n=============\nEnd of fulltext indexing -- writing docs_db\n";
   my $docs_file  = "$self->{index_dir}/docs.txt";
-  open my $docs_fh, ">", $docs_file or die "open $docs_file: $!";
+  open my $docs_fh, ">:encoding(UTF-8)", $docs_file or die "open $docs_file: $!";
   foreach my $id (sort {$a <=> $b} keys %{$self->{docs_db}{path}}) {
     my $path    = $self->{docs_db}{path}{$id} or die "no path for doc $id";
     my $details = $self->{docs_db}{details}{$path};
@@ -269,9 +279,6 @@ sub index_dir {
   my ($self, $rootdir, $path) = @_;
   return if $path && $path =~ /$ignore_dirs/;
 
-
-
-  
   my $dir = $rootdir;
   if ($path) {
     $dir .= "/$path";
@@ -280,7 +287,6 @@ sub index_dir {
   }
 
   print "DIR $dir\n";
-
 
   opendir my $dh, $dir or die $^E;
   my ($dirs, $files) = part { -d "$dir/$_" ? 0 : 1} grep {!/^\./} readdir $dh;
@@ -309,6 +315,9 @@ sub index_file {
   return print "SKIP $dir/$file (already met in a previous directory)\n"
     if $self->{seen_path}{$fullpath};
 
+  $DB::single = 1 if $file eq 'PSGI';
+
+
   $self->{seen_path}{$fullpath} = 1;
   my $max_mtime = 0;
   my ($size, $mtime, @filenames);
@@ -318,23 +327,23 @@ sub index_file {
     my $filename = "$dir/$file.$ext";
     ($size, $mtime) = (stat $filename)[7, 9] or die "stat $filename: $!";
     $size < $self->{max_size} or
-      print "$filename too big ($size bytes), skipped " and next EXT;
+      print "$filename too big ($size bytes), skipped\n" and next EXT;
     $mtime = max($max_mtime, $mtime);
     push @filenames, $filename;
   }
 
-
-  my $prev_mtime = $self->{docs_db}{$fullpath}[0]; # NOTE: direct access to {docs_db}
+  my $prev_mtime = $self->{docs_db}{details}{$fullpath}[0]; 
   return print "SKIP $dir/$file (index up to date)\n" if $prev_mtime && $mtime <= $prev_mtime;
 
   if (@filenames) {
-    my $old_doc_id = $self->{docs_db}{id}{$fullpath}; # NOTE: direct access to {docs_db}
+    my $old_doc_id = $self->{docs_db}{id}{$fullpath};
     my $doc_id     = $old_doc_id || ++$self->{max_doc_id};
 
     print "INDEXING $dir/$file (id $doc_id) ... ";
 
     my $t0 = time;
-    my $buf = join "\n", map {path($_)->slurp} @filenames;
+    #my $buf = join "\n", map {decode("Detect", path($_)->slurp_raw)} @filenames;
+    my $buf = join "\n", map {slurp_native_or_utf8($_)} @filenames;
     my ($description) = ($buf =~ /^=head1\s*NAME\s*(.*)$/m);
     $description ||= '';
     $description =~ s/\t/ /g;
@@ -355,7 +364,7 @@ sub index_file {
     my $interval = time - $t0;
     printf "%0.3f s.", $interval;
 
-    $self->{docs_db}{path}{$doc_id} = $fullpath;
+    $self->{docs_db}{path}{$doc_id}      = $fullpath;
     $self->{docs_db}{details}{$fullpath} = [$mtime, $description];
   }
 

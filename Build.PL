@@ -13,7 +13,6 @@ my $builder = Module::Build->new(
       'Alien::GvaScript'     => 1.021000,
       'CPAN::Common::Index::Mux::Ordered' => 0,
       'Encode'               => 0,
-      'Encode::Detect'       => 0,
       'Pod::POM'             => 0.25,
       'Pod::POM::View::HTML' => 0,
       'List::Util'           => 0,
