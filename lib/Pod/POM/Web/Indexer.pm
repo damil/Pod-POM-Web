@@ -7,13 +7,13 @@ use warnings;
 
 use Pod::POM;
 use Pod::POM::Web::Util qw/slurp_native_or_utf8/;
-use List::Util       qw/min max/;
-use List::MoreUtils  qw/part/;
+use List::Util          qw/min max/;
+use List::MoreUtils     qw/part/;
 use Search::Indexer;
-use Path::Tiny       qw/path/;
-use Params::Validate qw/validate_with SCALAR BOOLEAN ARRAYREF/;
-use Time::HiRes      qw/time/;
-use IO::Handle;      # for the 'autoflush' method
+use Path::Tiny          qw/path/;
+use Params::Validate    qw/validate_with SCALAR BOOLEAN ARRAYREF/;
+use Time::HiRes         qw/time/;
+use IO::Handle;         # for the 'autoflush' method
 use Text::Transliterator::Unaccent;
 our $VERSION = 1.23;
 
@@ -180,7 +180,7 @@ sub search {
   my @doc_ids       = sort {$scores->{$b} <=> $scores->{$a}} keys %$scores;
   my $n_total       = @doc_ids;
 
-  # loop over the relevant slice slice
+  # loop over the relevant slice
   my @slice = @doc_ids[$start_record .. min($end_record, $#doc_ids)];
   my @modules;
   my $docs_db = $self->docs_db;
@@ -314,9 +314,6 @@ sub index_file {
   my $fullpath = $path ? "$path/$file" : $file;
   return print "SKIP $dir/$file (already met in a previous directory)\n"
     if $self->{seen_path}{$fullpath};
-
-  $DB::single = 1 if $file eq 'PSGI';
-
 
   $self->{seen_path}{$fullpath} = 1;
   my $max_mtime = 0;

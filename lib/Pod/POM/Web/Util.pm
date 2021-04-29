@@ -8,13 +8,22 @@ use Path::Tiny        qw/path/;
 use Module::Metadata;
 use Exporter          qw/import/;
 
+# exported functions
 our @EXPORT_OK = qw/slurp_native_or_utf8 parse_version extract_POM_items/;
+
+# regex to guess if a perl source is in utf8
+my $is_probably_utf8 = qr{\b use \h+ (utf8 | common::sense | Mojo) # these modules indicate utf8 perl source
+                          |
+                          =encoding \h+ (utf|UTF)-?8               # this indicates utf8 pod documentationx
+                         }x;
+
 
 sub slurp_native_or_utf8 {
   my ($file) = @_;
 
   my $content     = path($file)->slurp_raw;
-  my $utf_decoded = $content =~ /(use utf8|=encoding utf-?8)/i && eval {decode_utf8($content, FB_CROAK | LEAVE_SRC)};
+  my $utf_decoded = $content =~ $is_probably_utf8
+                    && eval {decode_utf8($content, FB_CROAK | LEAVE_SRC)};
 
   return $utf_decoded || $content;
 }

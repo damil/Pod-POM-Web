@@ -4,7 +4,6 @@ package Pod::POM::Web; # see doc at end of file
 use strict;
 use warnings;
 use 5.010;
-# no warnings 'uninitialized';
 
 use parent 'Plack::Component';                             # web app based on Plack architecture
 use Plack::Request;                                        # Plack API for an HTTP request
@@ -19,8 +18,8 @@ use Alien::GvaScript 1.021000;                             # javascript files
 use Config;                                                # to find where are the perl script directories
 use Encode              qw/encode_utf8/;                   # utf8 encoding
 use Params::Validate    qw/validate_with SCALAR ARRAYREF/; # check validity of parameters
-use CPAN::Common::Index::Mux::Ordered;                     # current CPAN version of a module
 use Path::Tiny          qw/path/;                          # easy access to file contents
+use CPAN::Common::Index::Mux::Ordered;                     # current CPAN version of a module
 use Pod::POM::Web::Util qw/slurp_native_or_utf8 parse_version extract_POM_items/;
 
 
@@ -84,6 +83,23 @@ my @podfilters = (
   sub { $_[0] =~ s/=encoding utf-8/=encoding utf8/i; },
 
 );
+
+my %special_podfilters = (
+
+  perlfunc => # remove args in links to function names
+              # (for ex. L<C<open>|/open FILEHANDLE,MODE,EXPR> becomes L<C<open>|/open>
+              sub {$_[0] =~ s[(L<.*?\|/\w+)\s.*?>][$1>]g},
+
+  # perlre: the POM parser is not smart enough to parse
+  # L</C<< (?>pattern) >>>, so we translate them into L<C<< (?E<gt>pattern) >>|/(?E<gt>pattern)>
+  perlre   => sub {$_[0] =~ s[\(\?>][(?E<gt>]g;
+                   $_[0] =~ s[L</C<< (.*?) >>>][L<C<< $1 >>|/$1>]g},
+
+  # POSIX: the POM parser is not smart enough to parse
+  # L<C<function>(3)>, so we translate them into C<L<function(3)>>
+  POSIX    => sub {$_[0] =~ s[L<C<(\w+)>\((\d)\)>][C<L<$1($2)>>]g},
+ );
+
 
 
 #----------------------------------------------------------------------
@@ -277,7 +293,7 @@ __EOHTML__
 
 
 #----------------------------------------------------------------------
-# serving a single file (POD, source code or raw content)
+# serving a single file (source code, raw content or POD documentation)
 #----------------------------------------------------------------------
 
 sub serve_source {
@@ -309,7 +325,6 @@ sub serve_source {
     $formatted_sources .= "<p/><h2>$file</h2><p/><pre>$formatted_source</pre>";
   }
 
-
   my $offer_print = $params->{print} ? "" : <<__EOHTML__;
 <form method="get" target="_blank">
 <input type="submit" name="print" value="Print"> with<br>
@@ -330,10 +345,12 @@ __EOHTML__
 
   my $css_links = $self->css_links;
 
+  (my $module = $path) =~ s[/][::]g;
+
   my $html = <<__EOHTML__;
 <html>
 <head>
-  <title>Source of $path</title>
+  <title>Source of $module</title>
   $css_links
   <style>
     PRE {border: none; background: none}
@@ -342,7 +359,7 @@ __EOHTML__
 </head>
 <body>
 $doc_link
-<h1>Source of $path</h1>
+<h1>Source of $module</h1>
 $offer_print
 $formatted_sources
 </body>
@@ -350,7 +367,6 @@ $formatted_sources
 __EOHTML__
 
   $self->respond_html($html, $mtime);
-
 }
 
 
@@ -388,7 +404,7 @@ sub serve_module {
   my $cpan_version = $cpan_package ? $cpan_package->{version} : undef;
 
   # special pre-processing for some specific paths
-  my @special_podfilters = $self->_special_podfilters($path);
+  my @special_podfilters = ($special_podfilters{$path} // ());
 
   # POD content, preferably from the 1st file in list, otherwise from the 2nd
   my $pom     = $self->extract_POM($sources[0], @special_podfilters);
@@ -421,30 +437,6 @@ sub serve_module {
   return $self->respond_html($html, $mtime);
 }
 
-
-sub _special_podfilters {
-  my ($self, $path) = @_;
-
-  if ($path =~ /\bperlfunc$/) {
-    # special handling for perlfunc: remove args in links to function names
-    # (for ex. L<C<open>|/open FILEHANDLE,MODE,EXPR> becomes L<C<open>|/open>
-    return (sub {$_[0] =~ s[(L<.*?\|/\w+)\s.*?>][$1>]g});
-  }
-  elsif ($path =~ /\bperlre$/) {
-    # special handling for perlre: the POM parser is not smart enough to parse
-    # L</C<< (?>pattern) >>>, so we translate them into L<C<< (?E<gt>pattern) >>|/(?E<gt>pattern)>
-    return (sub {$_[0] =~ s[\(\?>][(?E<gt>]g;
-                 $_[0] =~ s[L</C<< (.*?) >>>][L<C<< $1 >>|/$1>]g});
-  }
-  elsif ($path eq 'POSIX') {
-    # special handling for POSIX: the POM parser is not smart enough to parse
-    # L<C<function>(3)>, so we translate them into C<L<function(3)>>
-    return (sub {$_[0] =~ s[L<C<(\w+)>\((\d)\)>][C<L<$1($2)>>]g});
-  }
-  else {
-    return ();
-  }
-}
 
 
 sub serve_script {
@@ -523,7 +515,8 @@ sub toc_for { # partial toc (called through Ajax)
 
   # otherwise, find and htmlize entries under a given prefix
   my $entries = $self->find_entries_for($prefix);
-  if ($prefix eq 'Pod') {   # Pod/perl* should not appear under Pod
+  if ($prefix eq 'Pod') {
+    # in old versions of perl, basic docs are under Pod/perl*.pod. They should not be listed in the toc.
     delete $entries->{$_} for grep /^perl/, keys %$entries;
   }
   return $self->respond_html($self->htmlize_entries($entries));
@@ -535,8 +528,9 @@ sub toc_perldocs {
 
   my %perldocs;
 
-  # perl basic docs may be found under "pod", "pods", or the root dir
-  for my $subdir (qw/pod pods/, "") {
+  # Old versions of perl had basic docs under "Pod". More recent have it under "pods".
+  # "perllocal.pod" is in the root dir.
+  for my $subdir (qw/Pod pods/, "") {
     my $entries = $self->find_entries_for($subdir);
 
     # just keep the perl* entries, without subdir prefix
@@ -985,7 +979,7 @@ sub perlfunc_items {
   if (!$self->{perlfunc_items}) {
     my ($func_path)  = $self->find_module("perlfunc")
       or die "'perlfunc.pod' does not seem to be installed on this system";
-    my $funcpom       = $self->extract_POM($func_path);
+    my $funcpom       = $self->extract_POM($func_path, $special_podfilters{perlfunc});
     my ($description) = grep {$_->title eq 'DESCRIPTION'} $funcpom->head1;
     my ($alphalist)
       = grep {$_->title =~ /^Alphabetical Listing/i} $description->head2;
@@ -999,14 +993,17 @@ sub perlfunc_items {
 sub search_perlfunc {
   my ($self, $func) = @_;
 
-
-  # HTML list of items matching the $func request
+  # find items matching the $func request
   my @matching_items = grep {$_->title =~ /^$func\b/} $self->perlfunc_items
      or return $self->respond_html("No documentation found for perl "
                                   ."function '<tt>$func</tt>'");
-
+  # htmlize
   my $view      = $self->mk_view(path => "perlfunc/$func");
   my @li_items  = map {$_->present($view)} @matching_items;
+
+  # hack the perlfunc internal links so that they call again search?source=perlfunc
+  s[href="#(\w+)"][href="$self->{script_name}/search?source=perlfunc&search=$1"]g
+    foreach @li_items;
 
   # HTML response
   my $css_links = $self->css_links;
@@ -1347,7 +1344,6 @@ sub respond {
 # miscellaneous
 #----------------------------------------------------------------------
 
-
 sub mk_view {
   my ($self, %args) = @_;
 
@@ -1360,8 +1356,6 @@ sub mk_view {
 
   return $view;
 }
-
-
 
 sub find_module { 
   my ($self, $path) = @_;
@@ -1387,8 +1381,6 @@ sub find_files {
   return;
 }
 
-
-
 sub css_links {
   my ($self) = @_;
 
@@ -1399,7 +1391,6 @@ sub css_links {
   return join "", @links;
 }
 
-
 sub js_scripts {
   my ($self) = @_;
 
@@ -1408,8 +1399,6 @@ sub js_scripts {
 
   return join "", @scripts;
 }
-
-
 
 
 #----------------------------------------------------------------------
@@ -1439,7 +1428,6 @@ sub generic_node {
        . qq{</div>};
 }
 
-
 sub closed_node {
   return generic_node(@_, class => "TN_node TN_closed");
 }
@@ -1447,8 +1435,6 @@ sub closed_node {
 sub leaf {
   return generic_node(@_, class => "TN_leaf");
 }
-
-
 
 1;
 #======================================================================
@@ -1766,9 +1752,6 @@ sub SCINEPLEX_coloring {
 }
 
 
-
-
-
 sub make_toc {
   my ($self, $item, $level) = @_;
 
@@ -1795,7 +1778,6 @@ sub make_toc {
 
 
 sub DESTROY {} # avoid AUTOLOAD
-
 
 1;
 
@@ -2141,8 +2123,7 @@ the wide possibilities of Andy Wardley's L<Pod::POM> parser.
 
 Thanks
 to Philippe Bruhat who mentioned a weakness in the API,
-to Chris Dolan who supplied many useful suggestions and patches
-(esp. integration with AnnoCPAN),
+to Chris Dolan who supplied many useful suggestions and patches,
 to Rémi Pauchet who pointed out a regression bug with Firefox CSS,
 to Alexandre Jousset who fixed a bug in the TOC display,
 to Cédric Bouvier who pointed out a IO bug in serving binary files,
