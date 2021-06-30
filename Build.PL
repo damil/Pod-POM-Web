@@ -32,7 +32,7 @@ my $builder = Module::Build->new(
       'CPAN::Common::Index'  => 0,
       },
     recommends => {
-      'Search::Indexer'           => 0.75,
+      'Search::Indexer'           => 1.0,
       'PPI::HTML'                 => 0,
     },
     test_requires => {

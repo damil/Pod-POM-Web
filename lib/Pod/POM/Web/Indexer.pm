@@ -9,12 +9,12 @@ use Pod::POM;
 use Pod::POM::Web::Util qw/slurp_native_or_utf8/;
 use List::Util          qw/min max/;
 use List::MoreUtils     qw/part/;
-use Search::Indexer;
+use Search::Indexer 1.0;
 use Path::Tiny          qw/path/;
 use Params::Validate    qw/validate_with SCALAR BOOLEAN ARRAYREF/;
 use Time::HiRes         qw/time/;
 use IO::Handle;         # for the 'autoflush' method
-use Text::Transliterator::Unaccent;
+
 our $VERSION = 1.23;
 
 #----------------------------------------------------------------------
@@ -22,38 +22,29 @@ our $VERSION = 1.23;
 #----------------------------------------------------------------------
 
 # regex for Perl identifiers
-my $id_regex = qr/(?![0-9])       # don't start with a digit
-                  \w\w+           # start with 2 or more word chars ..
-                  (?:::\w+)*      # .. and  possibly ::some::more::components
+my $id_regex = qr/
+                  \w{2,}     # start with 2 or more word chars ..
+                  (?:::\w+)* # .. and  possibly ::some::more::components
                  /x;
 
 
-
-
-
 # what is considered a "word" when parsing Perl sources
-my $wregex   = qr/(?:                  # either a Perl variable:
-                    (?:\$\#?|\@|\%)    #   initial sigil
-                    (?:                #     followed by
-                       $id_regex       #       an id
-                       |               #     or
-                       \^\w            #       builtin var with '^' prefix
-                       |               #     or
-                       (?:[\#\$](?!\w))#       just '$$' or '$#'
-                       |               #     or
-                       [^{\w\s\$]      #       builtin vars with 1 special char
+my $wregex   = qr/(?:                   # either a Perl variable:
+                    (?: \$\#?|\@|\%)    #   initial sigil
+                    (?:                 #     followed by
+                       $id_regex        #       an id
+                       |                #     or
+                       \^[A-Z]\b        #       builtin var with '^' prefix and single letter
+                       |                #     or
+                       (?:[\#\$](?!\w)) #       just '$$' or '$#'
+                       |                #     or
+                       [^\{\w\s\$]      #       builtin vars with 1 special char
                      )
-                     |                 # or
-                     $id_regex         # a plain word or module name
-                 )/x;
+                     |                  # or
+                     $id_regex          #   a module name or just a plain word
+                   )
+                 /x;
 
-# override default Search::Indexer wfilter, for better support for utf8
-my $unaccenter = Text::Transliterator::Unaccent->new(upper => 0);
-my $wfilter  = sub {
-  my $word = lc($_[0]);
-  $unaccenter->($word);
-  return $word;
-};
 
 
 # common words not to be indexed
@@ -154,7 +145,7 @@ sub docs_db {
 sub has_index {
   my ($self) = @_;
 
-  return $self->docs_db;
+  return Search::Indexer->has_index_in_dir($self->{index_dir});
 }
 
 
@@ -171,7 +162,6 @@ sub search {
 
   my $indexer = Search::Indexer->new(dir       => $self->{index_dir},
                                      wregex    => $wregex,
-                                     wfilter   => $wfilter,
                                      preMatch  => '[[',
                                      postMatch => ']]');
   my $search_result = $indexer->search($search_string, 'implicit_plus');
@@ -232,22 +222,26 @@ sub start_indexing_session {
   elsif ($self->docs_db) {
     # if there is already an existing index, build a reverse hash $path => $id
     $self->{docs_db}{id} = { reverse %{$self->{docs_db}{path}} };
+    $self->{max_doc_id}  = max keys %{$self->{docs_db}{path}};
   }
 
   # initialization of other attributes
   $self->{seen_path}      = {},
-  $self->{max_doc_id}     = 0;
+  $self->{max_doc_id}   //= 0;
   $self->{previous_index} = {};
-  $self->{search_indexer}
-    = Search::Indexer->new(dir       => $self->{index_dir},
-                           writeMode => 1,
-                           positions => $self->{positions},
-                           wregex    => $wregex,
-                           wfilter   => $wfilter,
-                           stopwords => \@stopwords);
+  $self->{search_indexer} = Search::Indexer->new(dir       => $self->{index_dir},
+                                                 writeMode => 1,
+                                                 positions => $self->{positions},
+                                                 wregex    => $wregex,
+                                                 stopwords => \@stopwords);
 
   # turn on autoflush on STDOUT so that messages can be piped to the web app
   my $previous_autoflush_value = STDOUT->autoflush(1);
+
+  # also pipe STDERR to the web app
+  local *STDERR;
+  open STDERR, '>&STDOUT'
+    or die "can't redirect STDERR";
 
   # main indexing loop
   my $t0 = time;
@@ -448,40 +442,6 @@ is called with the C<-e> flag, so that you can write
 
   perl -MPod::POM::Web::Indexer -e index
 
-
-=head1 PERFORMANCES
-
-On my machine, indexing a module takes an average of 0.2 seconds,
-except for some long and complex sources (this is why sources
-above 300K are ignored by default, see options above).
-Here are the worst figures (in seconds) :
-
-  Date/Manip            39.655
-  DBI                   30.73
-  Pod/perlfunc          29.502
-  Module/CoreList       27.287
-  CGI                   16.922
-  Config                13.445
-  CPAN                  12.598
-  Pod/perlapi           10.906
-  CGI/FormBuilder        8.592
-  Win32/TieRegistry      7.338
-  Spreadsheet/WriteExcel 7.132
-  Pod/perldiag           5.771
-  Parse/RecDescent       5.405
-  Bit/Vector             4.768
-
-The index will be stored in an F<index> subdirectory
-under the module installation directory.
-The total index size should be around 10MB if C<-positions> are off,
-and between 30MB and 50MB if C<-positions> are on, depending on
-how many modules are installed.
-
-
-=head1 TODO
-
- - highlights in shown documents
- - paging
 
 =cut
 

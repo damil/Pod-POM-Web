@@ -223,8 +223,6 @@ sub indexer {
 }
 
 
-
-
 # main request dispatcher (see L<Plack::Component>)
 sub call {
   my ($self, $env) = @_;
