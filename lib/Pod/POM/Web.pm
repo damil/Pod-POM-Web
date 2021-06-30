@@ -1209,8 +1209,7 @@ __EOHTML__
     my $n_total    = $results->{n_total};
 
     # build navigation links
-    my $base_url  = "?source=full-text&search=$search_string"; # TODO : SHOULD URL-ENCODE ???
-    
+    my $base_url  = encode_utf8("?source=full-text&search=$search_string");
     my $nav_links = $self->nav_links($base_url, $start_record, $end_record, $count, $n_total);
 
     # more HTML content
@@ -2132,20 +2131,6 @@ to Ben Bullock who added the 403 message for absent modules,
 and to Paul Cochrane for several improvements in the doc and in the
 repository structure.
 
-
-=head1 RELEASE NOTES
-
-Indexed information since version 1.04 is not compatible
-with previous versions.
-
-So if you upgraded from a previous version and want to use
-the index, you need to rebuild it entirely, by running the
-command :
-
-  perl -MPod::POM::Web::Indexer -e "index(-from_scratch => 1)"
-
-
-
 =head1 AUTHOR
 
 Laurent Dami, C<< <dami AT cpan DOT org> >>
@@ -2158,8 +2143,3 @@ Copyright 2007-2021 Laurent Dami, all rights reserved.
 This program is free software; you can redistribute it and/or modify it
 under the same terms as Perl itself.
 
-=head1 TODO
-
-  - real tests !
-  - bug: doc files taken as pragmas (lwptut, lwpcook, pip, pler)
-  - do something with perllocal (installation history)
