@@ -29,10 +29,10 @@ my $builder = Module::Build->new(
       'Plack::Request'       => 0,
       'Plack::Response'      => 0,
       'Plack::Util'          => 0,
+      'Search::Indexer'      => 1.0,
       'CPAN::Common::Index'  => 0,
       },
     recommends => {
-      'Search::Indexer'           => 1.0,
       'PPI::HTML'                 => 0,
     },
     test_requires => {
