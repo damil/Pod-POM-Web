@@ -31,7 +31,7 @@ use Pod::POM::Web::Util qw/slurp_native_or_utf8 parse_version extract_POM_items/
 # GLOBAL VARIABLES
 #---------------------------------------------------------------------
 
-our $VERSION = '1.24';
+our $VERSION = '1.25';
 
 # directories for modules -- filter @INC (we don't want '.', nor server_root added by mod_perl)
 my $server_root = eval {Apache2::ServerUtil::server_root()} || "";
