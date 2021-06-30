@@ -16,7 +16,7 @@ use Module::CoreList;                                      # asking if a module 
 use MIME::Types;                                           # translate file extension into MIME type
 use Alien::GvaScript 1.021000;                             # javascript files
 use Config;                                                # to find where are the perl script directories
-use Encode              qw/encode_utf8/;                   # utf8 encoding
+use Encode              qw/encode_utf8 decode_utf8/;       # utf8 encoding
 use Params::Validate    qw/validate_with SCALAR ARRAYREF/; # check validity of parameters
 use Path::Tiny          qw/path/;                          # easy access to file contents
 use CPAN::Common::Index::Mux::Ordered;                     # current CPAN version of a module
@@ -210,16 +210,16 @@ sub new {
 sub module_dirs {@{shift->{module_dirs}}}
 sub script_dirs {@{shift->{script_dirs}}}
 
-# lazy instantiation of the indexer class, at first call or if there are specific options
+# lazy instantiation of the indexer class
 sub indexer {
   my ($self, %options) = @_;
 
-  delete $self->{indexer} if keys %options;
+  # NOTE : the indexer cannot be cached, because this would lock the .BDB files, preventing updates
   require Pod::POM::Web::Indexer;
-  $self->{indexer} //= Pod::POM::Web::Indexer->new(index_dir   => $self->{index_dir},
-                                                   module_dirs => $self->{module_dirs},
-                                                   %options);
-  return $self->{indexer};
+  my $indexer = Pod::POM::Web::Indexer->new(index_dir   => $self->{index_dir},
+                                            module_dirs => $self->{module_dirs},
+                                            %options);
+  return $indexer;
 }
 
 
@@ -918,7 +918,7 @@ $self->{page_title}
 <a href="$self->{script_name}/Pod/POM/Web/Help" class="small_title">Help</a>
 </div>
 
-<form action="search" id="search_form" method="get">
+<form action="search" id="search_form" method="get" accept-charset="UTF-8">
 <span class="small_title">Search in</span>
      <select name="source">
       <option>perlfunc</option>
@@ -957,15 +957,16 @@ __EOHTML__
 sub dispatch_search {
   my ($self, $req) = @_;
 
-  my $params = $req->parameters;
+  my $params        = $req->parameters;
+  my $search_string = decode_utf8($params->{search});
 
   for ($params->{source}) {
-    /^perlfunc$/  and return $self->search_perlfunc($params->{search});
-    /^perlvar$/   and return $self->search_perlvar($params->{search});
-    /^perlfaq$/   and return $self->search_perlfaq($params->{search});
-    /^modules$/   and return $self->serve_module($params->{search});
-    /^full-text$/ and return $self->search_fulltext($params);
-    /^modlist$/   and return $self->modules_matching_prefix($params->{search});
+    /^perlfunc$/  and return $self->search_perlfunc($search_string);
+    /^perlvar$/   and return $self->search_perlvar($search_string);
+    /^perlfaq$/   and return $self->search_perlfaq($search_string);
+    /^modules$/   and return $self->serve_module($search_string);
+    /^full-text$/ and return $self->search_fulltext($search_string, $params);
+    /^modlist$/   and return $self->modules_matching_prefix($search_string);
 
     # otherwise
     die "cannot search in '$_'";
@@ -1140,7 +1141,7 @@ __EOHTML__
 
 
 sub search_fulltext {
-  my ($self, $params) = @_;
+  my ($self, $search_string, $params) = @_;
 
   # start of HTML page
   my $css_links = $self->css_links;
@@ -1187,7 +1188,6 @@ __EOHTML__
           .  "Please use the form above to generate the index";
   }
   else {
-    my $search_string = $params->{search};
     my $count         = $params->{count} || 50;
     my $start_record  = $params->{start} || 0;
     my $end_record    = $start_record + $count - 1;
@@ -1211,7 +1211,8 @@ __EOHTML__
     my $n_total    = $results->{n_total};
 
     # build navigation links
-    my $base_url  = "?source=full-text&search=$params->{search}";
+    my $base_url  = "?source=full-text&search=$search_string"; # TODO : SHOULD URL-ENCODE ???
+    
     my $nav_links = $self->nav_links($base_url, $start_record, $end_record, $count, $n_total);
 
     # more HTML content
@@ -1229,7 +1230,7 @@ __EOHTML__
       $html .= "<p>"
              . "<a href='$self->{script_name}/source/$path' class='src'>source</a>"
              . "<a href='$self->{script_name}/$path'>$path</a>"
-             . " <em>$description</em>"
+             . ($description ? " <em>$description</em>" : "")
              . "<br>"
              . "<small>$lst_excerpts</small>"
              . "</p>";
