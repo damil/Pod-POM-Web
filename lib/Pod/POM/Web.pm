@@ -188,6 +188,7 @@ sub new {
   # sources for CPAN index. The default requires an internet connexion. If there is a
   # local MiniCPAN mirror, it will be detected and used as an alternate source.
   my @cpan_indices = (MetaDB => {}); 
+
   if (my $local_minicpan = eval {require CPAN::Mini;
                                  my %conf = CPAN::Mini->read_config;
                                  $conf{local}}) {
@@ -396,10 +397,11 @@ sub serve_module {
   # module version
   my $version = firstval {$_} map {parse_version($_)} grep {/\.pm$/} @sources;
 
-  # latest CPAN version
+  # latest CPAN version -- needs hack because CPAN::Common::Index reports 'undef' instead of undef
   (my $mod_name = $path) =~ s[/][::]g;
   my $cpan_package = $self->{cpan_index}->search_packages( { package => $mod_name } );
   my $cpan_version = $cpan_package ? $cpan_package->{version} : undef;
+  undef $cpan_version if $cpan_version && $cpan_version eq 'undef';
 
   # special pre-processing for some specific paths
   my @special_podfilters = ($special_podfilters{$path} // ());
@@ -1561,8 +1563,7 @@ sub view_pod {
   my $installed = strftime("%x", localtime($self->{mtime}));
 
   # if this is a module (and not a script), get additional info
-  my ($version, $core_release, $orig_version, $cpan_info, $module_refs)
-    = ("") x 6;
+  my ($version, $core_release, $orig_version, $module_refs) = ("") x 5;
   if (my $mod_name = $self->{mod_name}) {
 
     # version
@@ -1644,7 +1645,7 @@ sub view_pod {
 <div id='TN_tree'>
   <div class="TN_node">
    <h1 class="TN_label">$name</h1>
-   <small>(${version}installed $installed$core_release$cpan_info)</small>
+   <small>(${version}installed $installed$core_release)</small>
    <span id="title_descr">$description</span>
    <span id="ref_box">
    <a href="$self->{script_name}/source/$self->{path}">Source</a>
