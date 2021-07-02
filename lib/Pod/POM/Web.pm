@@ -1365,7 +1365,7 @@ sub find_module {
 
 sub find_script {
   my ($self, $path) = @_;
-  return $self->find_files(script_dirs => $path, "$path.pl", "path.bat");
+  return $self->find_files(script_dirs => $path, "$path.pl", "$path.bat");
 }
 
 sub find_files {
