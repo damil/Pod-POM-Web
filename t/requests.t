@@ -36,7 +36,7 @@ test_psgi $app, sub {
 
   # module documentation
   $response_like->("/Plack", qr/Perl Superglue for Web frameworks/, "module 1");
-  $response_like->("/Plack", qr/\(v\. \d\.\d+, installed \d\d/,     "module version and date");
+  $response_like->("/Plack", qr/\(v\. \d\.\d+, installed \d/,       "module version and date");
 
   # script
   $response_like->("/script/plackup", qr/plackup is a command line utility/, "script");
